@@ -129,6 +129,11 @@ if ! command -v docker &> /dev/null; then
         ${SUDO} ${PKG_MGR} -y --allowerasing install moby-engine moby-cli
         ${SUDO} systemctl enable docker || true
         ${SUDO} systemctl start docker || true
+        # Wait for Docker to be ready
+        sleep 3
+        if ! docker info >/dev/null 2>&1; then
+            print_warning "Docker may not be fully started. Please check: systemctl status docker"
+        fi
     fi
 
     # Add user to docker group (skip if running as root)

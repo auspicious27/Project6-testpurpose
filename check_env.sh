@@ -3,7 +3,8 @@
 # check_env.sh - Health checks for all components
 # This script validates that all components (ArgoCD, Gitea, Velero, Trivy, apps) are healthy
 
-set -e
+# Don't exit on error - handle errors gracefully
+set +e
 
 echo "🔍 Checking DevOps Pipeline Environment Health..."
 
@@ -221,10 +222,10 @@ check_velero() {
     fi
     
     # Check backup location
-    if velero backup-location get &> /dev/null; then
+    if command -v velero &>/dev/null && velero backup-location get &> /dev/null; then
         print_success "Velero backup location is configured"
     else
-        print_warning "Velero backup location not configured"
+        print_warning "Velero backup location not configured or Velero CLI not available"
     fi
 }
 

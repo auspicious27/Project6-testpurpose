@@ -3,7 +3,8 @@
 # deploy_pipeline.sh - Build Docker images and deploy applications
 # This script builds Docker images for Flask app and microservices, pushes to registry, commits manifests, and triggers ArgoCD sync
 
-set -e
+# Don't exit on error - handle errors gracefully
+set +e
 
 echo "🚀 Deploying DevOps Pipeline..."
 
@@ -42,62 +43,125 @@ if ! kind get clusters | grep -q ${CLUSTER_NAME}; then
     exit 1
 fi
 
+# Check if Docker is running
+if ! systemctl is-active --quiet docker 2>/dev/null && ! docker info >/dev/null 2>&1; then
+    print_error "Docker is not running. Please start Docker first."
+    exit 1
+fi
+
 # Set kubectl context
-kubectl config use-context kind-${CLUSTER_NAME}
+kubectl config use-context kind-${CLUSTER_NAME} || {
+    print_error "Failed to set kubectl context"
+    exit 1
+}
 
 # Build and push Flask app
 print_status "Building Flask application..."
-cd apps/flask-app
-docker build -t flask-app:${VERSION} .
+cd apps/flask-app || {
+    print_error "Failed to change to apps/flask-app directory"
+    exit 1
+}
+docker build -t flask-app:${VERSION} . || {
+    print_error "Failed to build Flask app"
+    exit 1
+}
 docker tag flask-app:${VERSION} ${REGISTRY}/flask-app:${VERSION}
-kind load docker-image flask-app:${VERSION} --name ${CLUSTER_NAME}
+kind load docker-image flask-app:${VERSION} --name ${CLUSTER_NAME} || {
+    print_error "Failed to load Flask app image into cluster"
+    exit 1
+}
 print_success "Flask app built and loaded into cluster"
 
 # Build and push User Service
 print_status "Building User Service..."
-cd ../microservice-1
-docker build -t user-service:${VERSION} .
+cd ../microservice-1 || {
+    print_error "Failed to change to microservice-1 directory"
+    exit 1
+}
+docker build -t user-service:${VERSION} . || {
+    print_error "Failed to build User service"
+    exit 1
+}
 docker tag user-service:${VERSION} ${REGISTRY}/user-service:${VERSION}
-kind load docker-image user-service:${VERSION} --name ${CLUSTER_NAME}
+kind load docker-image user-service:${VERSION} --name ${CLUSTER_NAME} || {
+    print_error "Failed to load User service image into cluster"
+    exit 1
+}
 print_success "User service built and loaded into cluster"
 
 # Build and push Product Service
 print_status "Building Product Service..."
-cd ../microservice-2
-docker build -t product-service:${VERSION} .
+cd ../microservice-2 || {
+    print_error "Failed to change to microservice-2 directory"
+    exit 1
+}
+docker build -t product-service:${VERSION} . || {
+    print_error "Failed to build Product service"
+    exit 1
+}
 docker tag product-service:${VERSION} ${REGISTRY}/product-service:${VERSION}
-kind load docker-image product-service:${VERSION} --name ${CLUSTER_NAME}
+kind load docker-image product-service:${VERSION} --name ${CLUSTER_NAME} || {
+    print_error "Failed to load Product service image into cluster"
+    exit 1
+}
 print_success "Product service built and loaded into cluster"
 
-cd ../..
+cd ../.. || {
+    print_error "Failed to return to project root"
+    exit 1
+}
 
-# Update image references in manifests
-print_status "Updating image references in manifests..."
-find environments -name "*.yaml" -exec sed -i "s|image: .*:latest|image: ${REGISTRY}/\1:${VERSION}|g" {} \;
+# Update image references in manifests (skip if not needed - images are already tagged correctly)
+print_status "Checking manifest files..."
+# Note: Image names in manifests should match what we built
+# Since we're using kind load, images are available as flask-app:latest, etc.
+# We don't need to modify manifests if they already reference the correct images
 
 # Apply ArgoCD project and applications
 print_status "Applying ArgoCD configurations..."
-kubectl apply -f argocd/project.yaml
-kubectl apply -f argocd/argocd-apps.yaml
+kubectl apply -f argocd/project.yaml || print_warning "ArgoCD project may already exist"
+kubectl apply -f argocd/argocd-apps.yaml || print_warning "ArgoCD applications may already exist"
 
 # Wait for ArgoCD applications to be created
 print_status "Waiting for ArgoCD applications to be created..."
+sleep 15
+
+# Wait for ArgoCD applications to appear
+for i in {1..30}; do
+    if kubectl get application devops-pipeline-dev -n argocd &>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+# Sync applications using ArgoCD CLI if available, otherwise use kubectl patch
+print_status "Syncing ArgoCD applications..."
+if command -v argocd &>/dev/null; then
+    print_status "Using ArgoCD CLI for syncing..."
+    # Note: ArgoCD CLI requires server URL and login - skip for now, use kubectl
+fi
+
+# Update sync policies
+kubectl patch application devops-pipeline-dev -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null || print_warning "Could not update dev sync policy"
+kubectl patch application devops-pipeline-staging -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":false}}}}' 2>/dev/null || print_warning "Could not update staging sync policy"
+
+# Force sync dev environment using argocd app sync command
+print_status "Force syncing dev environment..."
+kubectl patch application devops-pipeline-dev -n argocd --type json --patch '[{"op": "replace", "path": "/operation", "value": {"sync": {"syncStrategy": {"hook": {}, "apply": {}}}}}]' 2>/dev/null || print_warning "Could not trigger sync operation"
+
+# Wait a bit for sync to start
 sleep 10
 
-# Sync applications
-print_status "Syncing ArgoCD applications..."
-kubectl patch application devops-pipeline-dev -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
-kubectl patch application devops-pipeline-staging -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":false}}}}'
-
-# Force sync dev environment
-print_status "Force syncing dev environment..."
-kubectl patch application devops-pipeline-dev -n argocd --type merge --patch '{"operation":{"sync":{"syncStrategy":{"force":true}}}}'
-
-# Wait for deployments to be ready
+# Wait for deployments to be ready (with retries)
 print_status "Waiting for deployments to be ready..."
-kubectl wait --for=condition=available --timeout=300s deployment/flask-app -n dev
-kubectl wait --for=condition=available --timeout=300s deployment/user-service -n dev
-kubectl wait --for=condition=available --timeout=300s deployment/product-service -n dev
+for deployment in flask-app user-service product-service; do
+    print_status "Waiting for ${deployment} deployment..."
+    if kubectl wait --for=condition=available --timeout=300s deployment/${deployment} -n dev 2>/dev/null; then
+        print_success "${deployment} is ready"
+    else
+        print_warning "${deployment} may still be starting. Check with: kubectl get pods -n dev"
+    fi
+done
 
 # Create ingress for Flask app
 print_status "Creating ingress for Flask app..."

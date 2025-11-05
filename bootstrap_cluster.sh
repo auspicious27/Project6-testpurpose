@@ -3,7 +3,8 @@
 # bootstrap_cluster.sh - Create cluster and install all components
 # This script creates a Kubernetes cluster, installs Gitea, ArgoCD, MinIO, Trivy Operator, Velero, and sets up initial GitOps repo
 
-set -e
+# Don't exit on error - handle errors gracefully
+set +e
 
 echo "🚀 Bootstrapping Kubernetes cluster with DevOps components..."
 
@@ -164,8 +165,13 @@ kubectl wait --for=condition=ready --timeout=600s pod -l app.kubernetes.io/name=
 
 # Install ArgoCD
 print_status "Installing ArgoCD..."
-kubectl apply -n ${ARGOCD_NAMESPACE} -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n ${ARGOCD_NAMESPACE}
+kubectl apply -n ${ARGOCD_NAMESPACE} -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || {
+    print_error "Failed to install ArgoCD"
+    exit 1
+}
+print_status "Waiting for ArgoCD server to be available..."
+kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n ${ARGOCD_NAMESPACE} || \
+    print_warning "ArgoCD server may still be starting"
 
 # Patch ArgoCD server to use LoadBalancer for kind
 kubectl patch svc argocd-server -n ${ARGOCD_NAMESPACE} -p '{"spec": {"type": "LoadBalancer"}}'
@@ -238,6 +244,7 @@ aws_secret_access_key = minioadmin123
 EOF
 
 # Install Velero CLI plugin
+print_status "Installing Velero (this may take a few minutes)..."
 velero install \
   --provider aws \
   --plugins velero/velero-plugin-for-aws:v1.7.0 \
@@ -245,10 +252,14 @@ velero install \
   --secret-file /tmp/credentials-velero \
   --use-volume-snapshots=false \
   --backup-location-config region=minio,s3ForcePathStyle=true,s3Url=http://minio.minio.svc.cluster.local:9000 \
-  --namespace ${VELERO_NAMESPACE}
+  --namespace ${VELERO_NAMESPACE} || {
+    print_warning "Velero installation completed with warnings or errors"
+}
 
 # Wait for Velero to be ready
-kubectl wait --for=condition=available --timeout=300s deployment/velero -n ${VELERO_NAMESPACE}
+print_status "Waiting for Velero to be ready..."
+kubectl wait --for=condition=available --timeout=300s deployment/velero -n ${VELERO_NAMESPACE} || \
+    print_warning "Velero may still be starting"
 
 # Create ArgoCD Application for GitOps
 print_status "Setting up ArgoCD Application..."
@@ -280,7 +291,19 @@ kubectl apply -f /tmp/argocd-app.yaml
 
 # Get ArgoCD admin password
 print_status "Retrieving ArgoCD admin password..."
-ARGOCD_PASSWORD=$(kubectl -n ${ARGOCD_NAMESPACE} get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+ARGOCD_PASSWORD=""
+for i in {1..30}; do
+    ARGOCD_PASSWORD=$(kubectl -n ${ARGOCD_NAMESPACE} get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+    if [ -n "$ARGOCD_PASSWORD" ]; then
+        break
+    fi
+    sleep 2
+done
+if [ -z "$ARGOCD_PASSWORD" ]; then
+    print_warning "Could not retrieve ArgoCD password. You can get it later with:"
+    echo "  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d"
+    ARGOCD_PASSWORD="<retrieve-later>"
+fi
 
 # Check if running as root and set SUDO prefix accordingly
 SUDO_HOSTS=""
