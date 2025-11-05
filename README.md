@@ -681,7 +681,40 @@ Creating cluster "devops-pipeline" ...
 
 **Note:** Storage class errors during cluster creation are non-critical and can be ignored. The cluster will still be functional.
 
+## 🚨 Troubleshooting
+
 ### Common Issues
+
+#### Kind Cluster Creation Errors
+
+**Error:** `failed to add default storage class` or `Storage class timeout`
+
+**Solution:** This is a non-critical error. The cluster will still be functional. If you see this error:
+
+```bash
+# The script will continue despite storage class errors
+# Verify cluster is working:
+kubectl get nodes
+kubectl cluster-info
+
+# If cluster is not ready, restart Docker and retry:
+systemctl restart docker
+kind delete cluster --name devops-pipeline
+./bootstrap_cluster.sh
+```
+
+**Error:** `kubectl: connection refused` or `dial tcp 127.0.0.1:8080: connect: connection refused`
+
+**Solution:** This means kubectl context is not set properly. The script now handles this automatically, but if you see this:
+
+```bash
+# Manually set the context:
+kind get kubeconfig --name devops-pipeline > ~/.kube/config
+kubectl config use-context kind-devops-pipeline
+
+# Verify:
+kubectl get nodes
+```
 
 #### Installation Issues
 
@@ -695,6 +728,12 @@ sudo systemctl restart docker
 kind delete cluster --name devops-pipeline
 kind create cluster --name devops-pipeline
 ```
+
+#### MkDocs Installation Warnings
+
+**Warning:** `Cannot uninstall requests 2.25.1` (RPM-installed package)
+
+**Solution:** This warning is non-critical. The script handles it automatically using `--break-system-packages` flag. MkDocs will install successfully despite the warning.
 
 #### Application Issues
 
