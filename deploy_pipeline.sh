@@ -126,8 +126,18 @@ EOF
 kubectl apply -f flask-ingress.yaml
 rm flask-ingress.yaml
 
+# Check if running as root and set SUDO prefix accordingly
+SUDO_HOSTS=""
+if [[ $EUID -eq 0 ]]; then
+   SUDO_HOSTS=""
+else
+   SUDO_HOSTS="sudo"
+fi
+
 # Add ingress host to /etc/hosts
-echo "127.0.0.1 flask-app.local" | sudo tee -a /etc/hosts
+if ! grep -q "flask-app.local" /etc/hosts 2>/dev/null; then
+    echo "127.0.0.1 flask-app.local" | ${SUDO_HOSTS} tee -a /etc/hosts
+fi
 
 # Run security scan with Trivy
 print_status "Running security scan with Trivy..."

@@ -261,7 +261,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/your-org/devops-pipeline
+    repoURL: https://github.com/auspicious27/Project6-testpurpose.git
     targetRevision: HEAD
     path: environments/dev
   destination:
@@ -282,11 +282,25 @@ kubectl apply -f /tmp/argocd-app.yaml
 print_status "Retrieving ArgoCD admin password..."
 ARGOCD_PASSWORD=$(kubectl -n ${ARGOCD_NAMESPACE} get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
 
+# Check if running as root and set SUDO prefix accordingly
+SUDO_HOSTS=""
+if [[ $EUID -eq 0 ]]; then
+   SUDO_HOSTS=""
+else
+   SUDO_HOSTS="sudo"
+fi
+
 # Create /etc/hosts entries
 print_status "Adding entries to /etc/hosts..."
-echo "127.0.0.1 gitea.local" | sudo tee -a /etc/hosts
-echo "127.0.0.1 minio.local" | sudo tee -a /etc/hosts
-echo "127.0.0.1 argocd.local" | sudo tee -a /etc/hosts
+if ! grep -q "gitea.local" /etc/hosts 2>/dev/null; then
+    echo "127.0.0.1 gitea.local" | ${SUDO_HOSTS} tee -a /etc/hosts
+fi
+if ! grep -q "minio.local" /etc/hosts 2>/dev/null; then
+    echo "127.0.0.1 minio.local" | ${SUDO_HOSTS} tee -a /etc/hosts
+fi
+if ! grep -q "argocd.local" /etc/hosts 2>/dev/null; then
+    echo "127.0.0.1 argocd.local" | ${SUDO_HOSTS} tee -a /etc/hosts
+fi
 
 # Clean up temporary files
 rm -f /tmp/kind-config.yaml /tmp/gitea-values.yaml /tmp/minio-values.yaml /tmp/credentials-velero /tmp/argocd-app.yaml

@@ -162,16 +162,18 @@ graph TB
 ## 📋 Prerequisites
 
 ### System Requirements
-- **OS**: Ubuntu 20.04+ or Debian 11+
+- **OS**: Ubuntu 20.04+, Debian 11+, or Amazon Linux 2023+
 - **RAM**: Minimum 4GB (8GB recommended)
 - **Disk**: Minimum 20GB free space
 - **CPU**: 2+ cores recommended
 - **Network**: Internet connectivity
 
 ### Required Permissions
-- Sudo privileges
-- Docker group membership
+- Sudo privileges (or run as root user)
+- Docker group membership (not required when running as root)
 - Kubernetes cluster access
+
+**Note:** All scripts support both regular user with sudo privileges and root user execution. When running as root, sudo commands are automatically skipped.
 
 ## 🚀 Quick Start
 
@@ -179,13 +181,15 @@ graph TB
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/devops-pipeline.git
-cd devops-pipeline
+git clone https://github.com/auspicious27/Project6-testpurpose.git
+cd Project6-testpurpose
 
-# Run complete setup (Ubuntu/Debian)
+# Run complete setup (Ubuntu/Debian/Amazon Linux)
 chmod +x setup_prereqs.sh bootstrap_cluster.sh deploy_pipeline.sh check_env.sh
 ./setup_prereqs.sh && ./bootstrap_cluster.sh && ./deploy_pipeline.sh && ./check_env.sh
 ```
+
+**Note:** The scripts support running as root user on Amazon Linux 2023 or other RHEL-based systems. Sudo commands will be automatically skipped when running as root.
 
 ### Verify Installation
 
@@ -397,8 +401,12 @@ EOF
 kubectl apply -f flask-ingress.yaml
 rm flask-ingress.yaml
 
-# Add local DNS entries
-echo "127.0.0.1 flask-app.local" | sudo tee -a /etc/hosts
+# Add local DNS entries (skip sudo if running as root)
+if [ "$EUID" -eq 0 ]; then
+    echo "127.0.0.1 flask-app.local" | tee -a /etc/hosts
+else
+    echo "127.0.0.1 flask-app.local" | sudo tee -a /etc/hosts
+fi
 ```
 
 ### 5) Test manually
@@ -705,8 +713,8 @@ For production deployment, consider:
 
 ```bash
 # Fork the repository
-git clone https://github.com/your-username/devops-pipeline.git
-cd devops-pipeline
+git clone https://github.com/auspicious27/Project6-testpurpose.git
+cd Project6-testpurpose
 
 # Create feature branch
 git checkout -b feature/new-feature
@@ -747,8 +755,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ### Community
 
-- **GitHub Issues**: [Report bugs and request features](https://github.com/your-org/devops-pipeline/issues)
-- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/your-org/devops-pipeline/discussions)
+- **GitHub Issues**: [Report bugs and request features](https://github.com/auspicious27/Project6-testpurpose/issues)
+- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/auspicious27/Project6-testpurpose/discussions)
 
 ---
 
@@ -758,7 +766,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ### Next Steps
 
-1. **Deploy**: Run the setup scripts on your Ubuntu/Debian system
+1. **Deploy**: Run the setup scripts on your Ubuntu/Debian/Amazon Linux system
 2. **Customize**: Modify configurations for your specific needs
 3. **Scale**: Add more applications and environments
 4. **Monitor**: Set up additional monitoring and alerting
