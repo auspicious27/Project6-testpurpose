@@ -211,6 +211,16 @@ done
 
 # Verify cluster nodes are ready
 print_status "Verifying cluster nodes..."
+NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
+READY_COUNT=$(kubectl get nodes --no-headers | grep Ready | wc -l)
+print_status "Cluster has ${NODE_COUNT} node(s), ${READY_COUNT} ready"
+
+if [ "$READY_COUNT" -eq 0 ]; then
+    print_error "No nodes are ready. Cluster may be unhealthy."
+    print_error "Please check: kubectl get nodes"
+    exit 1
+fi
+
 kubectl get nodes
 kubectl cluster-info
 
