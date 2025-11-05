@@ -107,7 +107,12 @@ else
     if ! command -v pip3 &> /dev/null; then
         python3 -m ensurepip --upgrade || true
     fi
-    python3 -m pip install --upgrade --user pip || true
+    # Upgrade pip without breaking system packages
+    if python3 -m pip install --help 2>&1 | grep -q "\-\-break-system-packages"; then
+        python3 -m pip install --upgrade --user --break-system-packages pip || true
+    else
+        python3 -m pip install --upgrade --user pip || true
+    fi
 fi
 
 # Install Docker
@@ -219,15 +224,30 @@ fi
 # Install MkDocs
 print_status "Installing MkDocs..."
 if ! command -v mkdocs &> /dev/null; then
-    pip3 install mkdocs mkdocs-material mkdocs-mermaid2-plugin
-    print_success "MkDocs installed successfully"
+    # Use --break-system-packages for Python 3.9+ on systems with RPM-installed packages
+    # Or use --user flag to avoid conflicts with system packages
+    if pip3 install --help 2>&1 | grep -q "\-\-break-system-packages"; then
+        pip3 install --break-system-packages mkdocs mkdocs-material mkdocs-mermaid2-plugin || \
+        pip3 install --user --break-system-packages mkdocs mkdocs-material mkdocs-mermaid2-plugin || \
+        print_warning "MkDocs installation failed, but continuing..."
+    else
+        pip3 install --user mkdocs mkdocs-material mkdocs-mermaid2-plugin || \
+        print_warning "MkDocs installation failed, but continuing..."
+    fi
+    if command -v mkdocs &> /dev/null; then
+        print_success "MkDocs installed successfully"
+    fi
 else
     print_warning "MkDocs is already installed"
 fi
 
 # Install additional Python packages for documentation
 print_status "Installing additional Python packages..."
-pip3 install --user pygments pymdown-extensions
+if pip3 install --help 2>&1 | grep -q "\-\-break-system-packages"; then
+    pip3 install --user --break-system-packages pygments pymdown-extensions || true
+else
+    pip3 install --user pygments pymdown-extensions || true
+fi
 
 # Create local bin directory and add to PATH
 print_status "Setting up local bin directory..."
@@ -254,7 +274,7 @@ echo "ArgoCD CLI version: $(argocd version --client --short)"
 echo "Trivy version: $(trivy --version | head -1)"
 echo "Velero version: $(velero version 2>/dev/null | head -1 || echo 'velero installed')"
 echo "Kustomize version: $(kustomize version --short)"
-echo "MkDocs version: $(mkdocs --version)"
+echo "MkDocs version: $(mkdocs --version 2>/dev/null || echo 'not installed')"
 
 print_success "All prerequisites installed successfully!"
 if [[ $EUID -ne 0 ]]; then
