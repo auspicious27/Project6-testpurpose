@@ -209,6 +209,10 @@ for i in {1..60}; do
     sleep 2
 done
 
+# Additional wait to ensure API server is stable
+print_status "Ensuring API server is stable..."
+sleep 10
+
 # Verify cluster nodes are ready
 print_status "Verifying cluster nodes..."
 NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
@@ -230,12 +234,45 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main
     print_error "Failed to install NGINX Ingress Controller"
     exit 1
 }
-print_status "Waiting for NGINX Ingress Controller to be ready..."
+
+print_status "Waiting for NGINX Ingress Controller to be ready (this may take 2-3 minutes)..."
+# Wait for ingress controller pods to be created first
+for i in {1..30}; do
+    if kubectl get pods -n ingress-nginx 2>/dev/null | grep -v NAME | grep -q .; then
+        break
+    fi
+    sleep 2
+done
+
+# Wait for ingress controller to be ready
 kubectl wait --namespace ingress-nginx \
   --for=condition=ready pod \
   --selector=app.kubernetes.io/component=controller \
-  --timeout=180s || \
-    print_warning "NGINX Ingress Controller may still be starting"
+  --timeout=300s || {
+    print_warning "NGINX Ingress Controller may still be starting. Waiting additional time..."
+    sleep 30
+}
+
+# Wait for webhook to be ready (critical for Gitea installation)
+print_status "Waiting for NGINX Ingress webhook to be ready..."
+for i in {1..60}; do
+    if kubectl get validatingwebhookconfiguration ingress-nginx-admission 2>/dev/null | grep -q ingress-nginx-admission; then
+        # Check if webhook endpoint is accessible
+        if kubectl get endpoints ingress-nginx-controller-admission -n ingress-nginx 2>/dev/null | grep -q "<none>"; then
+            sleep 2
+            continue
+        fi
+        print_success "NGINX Ingress webhook is ready"
+        break
+    fi
+    if [ $i -eq 60 ]; then
+        print_warning "NGINX Ingress webhook may not be ready, but continuing..."
+    fi
+    sleep 2
+done
+
+# Additional wait to ensure webhook is fully functional
+sleep 10
 
 # Create namespaces
 print_status "Creating namespaces..."
@@ -290,34 +327,113 @@ if helm list -n ${GITEA_NAMESPACE} 2>/dev/null | grep -q gitea; then
     helm upgrade gitea gitea-charts/gitea \
       --namespace ${GITEA_NAMESPACE} \
       --values /tmp/gitea-values.yaml \
-      --timeout 10m || print_warning "Gitea helm upgrade completed with warnings"
+      --timeout 10m \
+      --wait=false \
+      --atomic=false || print_warning "Gitea helm upgrade completed with warnings"
 else
-    helm install gitea gitea-charts/gitea \
+    # Install Gitea - disable webhook validation if needed
+    print_status "Installing Gitea with Helm..."
+    if helm install gitea gitea-charts/gitea \
       --namespace ${GITEA_NAMESPACE} \
       --values /tmp/gitea-values.yaml \
-      --timeout 10m || print_warning "Gitea helm install completed with warnings"
+      --timeout 10m \
+      --wait=false \
+      --atomic=false 2>&1 | tee /tmp/gitea-install.log; then
+        print_success "Gitea Helm installation started"
+    else
+        # If webhook error, try disabling ingress temporarily
+        if grep -q "webhook" /tmp/gitea-install.log; then
+            print_warning "Webhook error detected. Installing Gitea without ingress..."
+            # Create values without ingress
+            cat > /tmp/gitea-values-no-ingress.yaml << EOF
+gitea:
+  admin:
+    username: admin
+    password: admin123
+    email: admin@devops.local
+  config:
+    server:
+      ROOT_URL: http://gitea.local
+      DOMAIN: gitea.local
+    database:
+      DB_TYPE: sqlite3
+    service:
+      DISABLE_REGISTRATION: false
+persistence:
+  enabled: true
+  size: 10Gi
+ingress:
+  enabled: false
+service:
+  http:
+    type: ClusterIP
+    port: 3000
+EOF
+            helm install gitea gitea-charts/gitea \
+              --namespace ${GITEA_NAMESPACE} \
+              --values /tmp/gitea-values-no-ingress.yaml \
+              --timeout 10m \
+              --wait=false \
+              --atomic=false || print_warning "Gitea installation completed with warnings"
+        else
+            print_warning "Gitea helm install completed with warnings"
+        fi
+    fi
 fi
 
 # Wait for Gitea pods to be created and running
 print_status "Waiting for Gitea pods to be ready (this may take a few minutes)..."
-sleep 15
+sleep 20
+
 # Wait for pods to appear first
-for i in {1..20}; do
+for i in {1..30}; do
     if kubectl get pods -n ${GITEA_NAMESPACE} -l app.kubernetes.io/name=gitea 2>/dev/null | grep -v NAME | grep -q .; then
         break
     fi
     sleep 5
 done
+
 kubectl wait --for=condition=ready --timeout=600s pod -l app.kubernetes.io/name=gitea -n ${GITEA_NAMESPACE} || \
     print_warning "Gitea pods may still be starting, but continuing..."
 
 # Install ArgoCD
 print_status "Installing ArgoCD..."
-kubectl apply -n ${ARGOCD_NAMESPACE} -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml || {
-    print_error "Failed to install ArgoCD"
+# Wait a bit more to ensure API server is fully stable
+print_status "Ensuring API server is ready before ArgoCD installation..."
+for i in {1..30}; do
+    if kubectl cluster-info &>/dev/null && kubectl get nodes &>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+# Disable validation temporarily to avoid timeout issues
+print_status "Downloading ArgoCD manifests..."
+if curl -sSL https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml -o /tmp/argocd-install.yaml; then
+    print_status "Applying ArgoCD manifests (this may take 1-2 minutes)..."
+    kubectl apply -n ${ARGOCD_NAMESPACE} --validate=false -f /tmp/argocd-install.yaml || {
+        print_warning "ArgoCD installation had errors. Retrying..."
+        sleep 15
+        kubectl apply -n ${ARGOCD_NAMESPACE} --validate=false -f /tmp/argocd-install.yaml || {
+            print_error "Failed to install ArgoCD. Please check cluster connectivity."
+            print_error "Try: kubectl get nodes && kubectl cluster-info"
+            exit 1
+        }
+    }
+else
+    print_error "Failed to download ArgoCD manifests. Please check internet connectivity."
     exit 1
-}
-print_status "Waiting for ArgoCD server to be available..."
+fi
+
+print_status "Waiting for ArgoCD server to be available (this may take 2-3 minutes)..."
+# Wait for ArgoCD pods to be created first
+for i in {1..60}; do
+    if kubectl get pods -n ${ARGOCD_NAMESPACE} -l app.kubernetes.io/name=argocd-server 2>/dev/null | grep -v NAME | grep -q .; then
+        break
+    fi
+    sleep 2
+done
+
 kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n ${ARGOCD_NAMESPACE} || \
     print_warning "ArgoCD server may still be starting"
 
@@ -357,11 +473,21 @@ print_status "Installing MinIO (this may take several minutes)..."
 helm install minio minio/minio \
   --namespace ${MINIO_NAMESPACE} \
   --values /tmp/minio-values.yaml \
-  --timeout 10m || print_warning "MinIO helm install completed with warnings"
+  --timeout 10m \
+  --wait=false \
+  --atomic=false || print_warning "MinIO helm install completed with warnings"
 
 # Wait for MinIO pods to be ready
 print_status "Waiting for MinIO pods to be ready..."
-sleep 15
+sleep 20
+# Wait for pods to appear first
+for i in {1..30}; do
+    if kubectl get pods -n ${MINIO_NAMESPACE} -l app=minio 2>/dev/null | grep -v NAME | grep -q .; then
+        break
+    fi
+    sleep 5
+done
+
 kubectl wait --for=condition=ready --timeout=600s pod -l app=minio -n ${MINIO_NAMESPACE} || \
     print_warning "MinIO pods may still be starting, but continuing..."
 
@@ -374,11 +500,21 @@ helm repo update
 helm install trivy-operator aqua/trivy-operator \
   --namespace ${TRIVY_NAMESPACE} \
   --create-namespace \
-  --timeout 10m || print_warning "Trivy Operator helm install completed with warnings"
+  --timeout 10m \
+  --wait=false \
+  --atomic=false || print_warning "Trivy Operator helm install completed with warnings"
 
 # Wait for Trivy Operator pods to be ready
 print_status "Waiting for Trivy Operator to be ready..."
-sleep 10
+sleep 15
+# Wait for pods to appear first
+for i in {1..30}; do
+    if kubectl get pods -n ${TRIVY_NAMESPACE} -l app.kubernetes.io/name=trivy-operator 2>/dev/null | grep -v NAME | grep -q .; then
+        break
+    fi
+    sleep 5
+done
+
 kubectl wait --for=condition=ready --timeout=300s pod -l app.kubernetes.io/name=trivy-operator -n ${TRIVY_NAMESPACE} || \
     print_warning "Trivy Operator may still be starting, but continuing..."
 
@@ -474,7 +610,7 @@ if ! grep -q "argocd.local" /etc/hosts 2>/dev/null; then
 fi
 
 # Clean up temporary files
-rm -f /tmp/kind-config.yaml /tmp/gitea-values.yaml /tmp/minio-values.yaml /tmp/credentials-velero /tmp/argocd-app.yaml
+rm -f /tmp/kind-config.yaml /tmp/gitea-values.yaml /tmp/gitea-values-no-ingress.yaml /tmp/minio-values.yaml /tmp/credentials-velero /tmp/argocd-app.yaml /tmp/argocd-install.yaml /tmp/gitea-install.log 2>/dev/null || true
 
 print_success "Cluster bootstrap completed successfully!"
 print_status "Access URLs:"
