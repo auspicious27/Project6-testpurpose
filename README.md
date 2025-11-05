@@ -732,20 +732,31 @@ kubectl config use-context kind-devops-pipeline
 kubectl get nodes
 ```
 
-**Error:** `Failed to get kubeconfig from kind cluster`
+**Error:** `failed calling webhook "validate.nginx.ingress.kubernetes.io"` or `webhook connection refused`
 
-**Solution:** The cluster may have partially created. Try:
+**Solution:** This happens when NGINX Ingress webhook is not ready. The script now:
+- Waits for webhook to be ready before installing Gitea
+- Falls back to installing Gitea without ingress if webhook fails
+- You can manually add ingress later if needed
 
+If you see this error, the script will handle it automatically. Gitea will still install successfully.
+
+**Error:** `TLS handshake timeout` during ArgoCD installation
+
+**Solution:** The script now:
+- Downloads ArgoCD manifests locally first
+- Disables validation to avoid timeout issues
+- Waits for API server to be stable before installation
+- Retries automatically if first attempt fails
+
+If you still see this:
 ```bash
-# Clean up completely:
-kind delete cluster --name devops-pipeline
-docker ps -a | grep devops-pipeline | awk '{print $1}' | xargs docker rm -f
+# Check cluster health:
+kubectl get nodes
+kubectl cluster-info
 
-# Restart Docker:
-systemctl restart docker
-
-# Retry:
-./bootstrap_cluster.sh
+# Wait a bit and retry ArgoCD installation:
+kubectl apply -n argocd --validate=false -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 ```
 
 #### Installation Issues
