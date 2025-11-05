@@ -40,7 +40,25 @@ MINIO_NAMESPACE="minio"
 TRIVY_NAMESPACE="trivy-system"
 VELERO_NAMESPACE="velero"
 
+# Check Docker is running
+print_status "Checking Docker status..."
+if ! systemctl is-active --quiet docker 2>/dev/null && ! docker info >/dev/null 2>&1; then
+    print_error "Docker is not running. Please start Docker first:"
+    echo "  systemctl start docker"
+    echo "  systemctl enable docker"
+    exit 1
+fi
+
+# Check Docker has enough resources
+print_status "Checking Docker resources..."
+if ! docker info | grep -q "Swarm: active"; then
+    print_status "Docker is ready"
+else
+    print_warning "Docker Swarm is active. This may cause issues with kind."
+fi
+
 # Create kind cluster configuration
+# Use single-node cluster for reliability (can add workers later if needed)
 print_status "Creating kind cluster configuration..."
 cat > /tmp/kind-config.yaml << EOF
 kind: Cluster
@@ -67,12 +85,21 @@ nodes:
   - containerPort: 8080
     hostPort: 8080
     protocol: TCP
-- role: worker
-- role: worker
 EOF
 
-# Create kind cluster
-print_status "Creating kind cluster: ${CLUSTER_NAME}"
+# Clean up any existing cluster first
+print_status "Checking for existing clusters..."
+if kind get clusters | grep -q ${CLUSTER_NAME}; then
+    print_warning "Cluster ${CLUSTER_NAME} already exists. Deleting..."
+    kind delete cluster --name ${CLUSTER_NAME} || true
+    sleep 5
+    # Clean up any leftover containers
+    docker ps -a | grep ${CLUSTER_NAME} | awk '{print $1}' | xargs -r docker rm -f 2>/dev/null || true
+fi
+
+# Try creating cluster with retry logic
+print_status "Creating kind cluster (this may take 2-3 minutes)..."
+print_status "Using single-node cluster for better reliability..."
 if kind get clusters | grep -q ${CLUSTER_NAME}; then
     print_warning "Cluster ${CLUSTER_NAME} already exists. Deleting..."
     kind delete cluster --name ${CLUSTER_NAME}
@@ -81,45 +108,106 @@ fi
 
 # Try creating cluster with retry logic
 print_status "Creating kind cluster (this may take 2-3 minutes)..."
-# Create cluster - ignore storage class errors as they're non-critical
-kind create cluster --config /tmp/kind-config.yaml --wait 120s 2>&1 | grep -v "failed to add default storage class" | tee /tmp/kind-create.log || {
-    print_warning "Kind cluster creation had warnings. Checking if cluster is functional..."
-    sleep 10
-}
+print_status "Using single-node cluster for better reliability..."
+
+# Clean up any existing cluster first
+if kind get clusters | grep -q ${CLUSTER_NAME}; then
+    print_warning "Cleaning up existing cluster..."
+    kind delete cluster --name ${CLUSTER_NAME} || true
+    sleep 5
+fi
+
+# Create cluster - ignore storage class and worker node errors as they're non-critical
+print_status "Attempting to create cluster..."
+if kind create cluster --config /tmp/kind-config.yaml --wait 180s 2>&1 | tee /tmp/kind-create.log; then
+    print_success "Cluster created successfully!"
+else
+    # Check if control plane is working even if creation had errors
+    print_warning "Cluster creation had warnings. Checking if control plane is functional..."
+    sleep 15
+    
+    # Check if cluster exists and control plane is working
+    if kind get clusters | grep -q ${CLUSTER_NAME}; then
+        print_status "Cluster exists, verifying control plane..."
+        # Try to get kubeconfig
+        mkdir -p ~/.kube
+        if kind get kubeconfig --name ${CLUSTER_NAME} > ~/.kube/config 2>/dev/null; then
+            export KUBECONFIG=~/.kube/config
+            if kubectl cluster-info &>/dev/null 2>&1 && kubectl get nodes &>/dev/null 2>&1; then
+                print_success "Control plane is working despite warnings!"
+            else
+                print_error "Control plane is not responding. Trying fallback method..."
+                # Fallback: delete and recreate with simpler config
+                kind delete cluster --name ${CLUSTER_NAME} || true
+                sleep 5
+                print_status "Trying fallback: creating cluster without config file..."
+                if kind create cluster --name ${CLUSTER_NAME} --wait 180s; then
+                    print_success "Cluster created using fallback method!"
+                else
+                    print_error "All cluster creation methods failed. Please check Docker and system resources."
+                    exit 1
+                fi
+            fi
+        else
+            print_error "Cannot get kubeconfig. Trying fallback method..."
+            kind delete cluster --name ${CLUSTER_NAME} || true
+            sleep 5
+            if kind create cluster --name ${CLUSTER_NAME} --wait 180s; then
+                print_success "Cluster created using fallback method!"
+            else
+                print_error "All cluster creation methods failed. Please check Docker and system resources."
+                exit 1
+            fi
+        fi
+    else
+        print_error "Cluster creation failed completely. Trying fallback method..."
+        sleep 5
+        if kind create cluster --name ${CLUSTER_NAME} --wait 180s; then
+            print_success "Cluster created using fallback method!"
+        else
+            print_error "All cluster creation methods failed. Please check:"
+            echo "  1. Docker is running: systemctl status docker"
+            echo "  2. Docker has enough resources: docker info"
+            echo "  3. System has enough memory (at least 4GB free)"
+            exit 1
+        fi
+    fi
+fi
 
 # Ensure kubeconfig directory exists
 mkdir -p ~/.kube
 
 # Set kubectl context and verify cluster is ready
 print_status "Setting kubectl context..."
-kind get kubeconfig --name ${CLUSTER_NAME} > ~/.kube/config 2>/dev/null || {
+if ! kind get kubeconfig --name ${CLUSTER_NAME} > ~/.kube/config 2>/dev/null; then
     print_error "Failed to get kubeconfig from kind cluster"
+    print_error "Please check if cluster is running: kind get clusters"
+    print_error "If cluster exists, try: kind delete cluster --name ${CLUSTER_NAME} && ./bootstrap_cluster.sh"
+    exit 1
+fi
+
+export KUBECONFIG=~/.kube/config
+
+# Ensure context is set
+kubectl config use-context kind-${CLUSTER_NAME} || {
+    print_error "Failed to set kubectl context"
     exit 1
 }
-export KUBECONFIG=~/.kube/config
 
 # Wait for cluster to be ready
 print_status "Waiting for cluster to be ready..."
-for i in {1..30}; do
-    if kubectl cluster-info --context kind-${CLUSTER_NAME} &>/dev/null && \
-       kubectl get nodes --context kind-${CLUSTER_NAME} &>/dev/null; then
+for i in {1..60}; do
+    if kubectl cluster-info &>/dev/null && kubectl get nodes &>/dev/null && kubectl get nodes | grep -q Ready; then
         print_success "Cluster is ready!"
         break
     fi
-    if [ $i -eq 30 ]; then
+    if [ $i -eq 60 ]; then
         print_error "Cluster is not ready after waiting. Please check Docker and retry."
+        print_error "Try: systemctl restart docker && kind delete cluster --name ${CLUSTER_NAME}"
         exit 1
     fi
     sleep 2
 done
-
-# Set default context for all subsequent commands
-kind get kubeconfig --name ${CLUSTER_NAME} > ~/.kube/config 2>/dev/null || true
-kubectl config use-context kind-${CLUSTER_NAME} || {
-    print_error "Failed to set kubectl context. Exiting."
-    exit 1
-}
-export KUBECONFIG=~/.kube/config
 
 # Verify cluster nodes are ready
 print_status "Verifying cluster nodes..."

@@ -679,7 +679,11 @@ Creating cluster "devops-pipeline" ...
 [SUCCESS] Cluster bootstrap completed successfully!
 ```
 
-**Note:** Storage class errors during cluster creation are non-critical and can be ignored. The cluster will still be functional.
+**Note:** 
+- Storage class errors during cluster creation are non-critical and can be ignored
+- Worker node join errors are handled automatically - script will use single-node cluster
+- If cluster creation fails, script will automatically try fallback method
+- Single-node cluster is used for better reliability and resource efficiency
 
 ## 🚨 Troubleshooting
 
@@ -703,9 +707,21 @@ kind delete cluster --name devops-pipeline
 ./bootstrap_cluster.sh
 ```
 
+**Error:** `failed to join node with kubeadm` or `kubelet isn't running or healthy`
+
+**Solution:** This happens when worker nodes fail to join. The script now uses a single-node cluster (control-plane only) which is more reliable. If you still see this:
+
+```bash
+# Clean up and retry:
+kind delete cluster --name devops-pipeline
+docker system prune -f
+systemctl restart docker
+./bootstrap_cluster.sh
+```
+
 **Error:** `kubectl: connection refused` or `dial tcp 127.0.0.1:8080: connect: connection refused`
 
-**Solution:** This means kubectl context is not set properly. The script now handles this automatically, but if you see this:
+**Solution:** This means kubectl context is not set properly. The script now handles this automatically with fallback methods, but if you see this:
 
 ```bash
 # Manually set the context:
@@ -714,6 +730,22 @@ kubectl config use-context kind-devops-pipeline
 
 # Verify:
 kubectl get nodes
+```
+
+**Error:** `Failed to get kubeconfig from kind cluster`
+
+**Solution:** The cluster may have partially created. Try:
+
+```bash
+# Clean up completely:
+kind delete cluster --name devops-pipeline
+docker ps -a | grep devops-pipeline | awk '{print $1}' | xargs docker rm -f
+
+# Restart Docker:
+systemctl restart docker
+
+# Retry:
+./bootstrap_cluster.sh
 ```
 
 #### Installation Issues
