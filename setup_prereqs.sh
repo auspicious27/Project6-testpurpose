@@ -31,10 +31,16 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if running as root
+# Check if running as root and set SUDO prefix accordingly
+SUDO=""
 if [[ $EUID -eq 0 ]]; then
-   print_error "This script should not be run as root. Please run as a regular user with sudo privileges."
-   exit 1
+   print_warning "Running as root. Sudo commands will be skipped."
+   SUDO=""
+   # Try to get the original user if available
+   ORIGINAL_USER="${SUDO_USER:-${USER}}"
+else
+   SUDO="sudo"
+   ORIGINAL_USER="${USER}"
 fi
 
 # Detect package manager / distro
@@ -54,15 +60,15 @@ fi
 # Update system packages
 print_status "Updating system packages..."
 if [[ "$PKG_MGR" == "apt" ]]; then
-    sudo apt-get update -y
+    ${SUDO} apt-get update -y
 else
-    sudo ${PKG_MGR} -y update || true
+    ${SUDO} ${PKG_MGR} -y update || true
 fi
 
 # Install basic dependencies
 print_status "Installing basic dependencies..."
 if [[ "$PKG_MGR" == "apt" ]]; then
-    sudo apt-get install -y \
+    ${SUDO} apt-get install -y \
         curl \
         wget \
         git \
@@ -85,7 +91,7 @@ else
     else
         CURL_PKG="curl"
     fi
-    sudo ${PKG_MGR} -y --allowerasing install \
+    ${SUDO} ${PKG_MGR} -y --allowerasing install \
         ${CURL_PKG} \
         wget \
         git \
@@ -108,20 +114,24 @@ fi
 print_status "Installing Docker..."
 if ! command -v docker &> /dev/null; then
     if [[ "$PKG_MGR" == "apt" ]]; then
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        sudo apt-get update -y
-        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | ${SUDO} gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | ${SUDO} tee /etc/apt/sources.list.d/docker.list > /dev/null
+        ${SUDO} apt-get update -y
+        ${SUDO} apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
     else
         # Amazon Linux / RHEL-family
-        sudo ${PKG_MGR} -y --allowerasing install docker || \
-        sudo ${PKG_MGR} -y --allowerasing install moby-engine moby-cli
-        sudo systemctl enable docker || true
-        sudo systemctl start docker || true
+        ${SUDO} ${PKG_MGR} -y --allowerasing install docker || \
+        ${SUDO} ${PKG_MGR} -y --allowerasing install moby-engine moby-cli
+        ${SUDO} systemctl enable docker || true
+        ${SUDO} systemctl start docker || true
     fi
 
-    # Add user to docker group
-    sudo usermod -aG docker $USER || true
+    # Add user to docker group (skip if running as root)
+    if [[ $EUID -ne 0 ]]; then
+        ${SUDO} usermod -aG docker $ORIGINAL_USER || true
+    else
+        print_warning "Skipping usermod - running as root. Docker group membership may need manual configuration."
+    fi
     print_success "Docker installed successfully"
 else
     print_warning "Docker is already installed"
@@ -133,7 +143,7 @@ if ! command -v kubectl &> /dev/null; then
     KUBECTL_STABLE=$(curl -L -s https://dl.k8s.io/release/stable.txt)
     curl -L "https://dl.k8s.io/release/${KUBECTL_STABLE}/bin/linux/amd64/kubectl" -o /tmp/kubectl
     chmod +x /tmp/kubectl
-    sudo install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+    ${SUDO} install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl
     rm -f /tmp/kubectl
     print_success "kubectl installed successfully"
 else
@@ -145,7 +155,7 @@ print_status "Installing kind..."
 if ! command -v kind &> /dev/null; then
     curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
     chmod +x /tmp/kind
-    sudo mv /tmp/kind /usr/local/bin/kind
+    ${SUDO} mv /tmp/kind /usr/local/bin/kind
     print_success "kind installed successfully"
 else
     print_warning "kind is already installed"
@@ -164,7 +174,7 @@ fi
 print_status "Installing ArgoCD CLI..."
 if ! command -v argocd &> /dev/null; then
     curl -sSL -o /tmp/argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-    sudo install -m 555 /tmp/argocd-linux-amd64 /usr/local/bin/argocd
+    ${SUDO} install -m 555 /tmp/argocd-linux-amd64 /usr/local/bin/argocd
     rm -f /tmp/argocd-linux-amd64
     print_success "ArgoCD CLI installed successfully"
 else
@@ -175,7 +185,7 @@ fi
 print_status "Installing Trivy..."
 if ! command -v trivy &> /dev/null; then
     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp
-    sudo install -m 755 /tmp/trivy /usr/local/bin/trivy
+    ${SUDO} install -m 755 /tmp/trivy /usr/local/bin/trivy
     rm -f /tmp/trivy
     print_success "Trivy installed successfully"
 else
@@ -187,7 +197,7 @@ print_status "Installing Velero..."
 if ! command -v velero &> /dev/null; then
     wget -O /tmp/velero.tar.gz https://github.com/vmware-tanzu/velero/releases/download/v1.12.0/velero-v1.12.0-linux-amd64.tar.gz
     tar -xvf /tmp/velero.tar.gz -C /tmp
-    sudo mv /tmp/velero-v1.12.0-linux-amd64/velero /usr/local/bin/
+    ${SUDO} mv /tmp/velero-v1.12.0-linux-amd64/velero /usr/local/bin/
     rm -rf /tmp/velero-v1.12.0-linux-amd64* /tmp/velero.tar.gz
     print_success "Velero installed successfully"
 else
@@ -199,7 +209,7 @@ print_status "Installing Kustomize..."
 if ! command -v kustomize &> /dev/null; then
     cd /tmp
     curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-    sudo mv /tmp/kustomize /usr/local/bin/ || sudo mv kustomize /usr/local/bin/
+    ${SUDO} mv /tmp/kustomize /usr/local/bin/ || ${SUDO} mv kustomize /usr/local/bin/
     cd - > /dev/null
     print_success "Kustomize installed successfully"
 else
@@ -227,8 +237,8 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 # Install Docker Compose (standalone)
 print_status "Installing Docker Compose..."
 if ! command -v docker-compose &> /dev/null; then
-    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    sudo chmod +x /usr/local/bin/docker-compose
+    ${SUDO} curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    ${SUDO} chmod +x /usr/local/bin/docker-compose
     print_success "Docker Compose installed successfully"
 else
     print_warning "Docker Compose is already installed"
@@ -247,11 +257,12 @@ echo "Kustomize version: $(kustomize version --short)"
 echo "MkDocs version: $(mkdocs --version)"
 
 print_success "All prerequisites installed successfully!"
-print_warning "Please log out and log back in for Docker group changes to take effect."
+if [[ $EUID -ne 0 ]]; then
+    print_warning "Please log out and log back in for Docker group changes to take effect."
+fi
 print_status "Next steps:"
-echo "  1. Log out and log back in"
-echo "  2. Run: ./bootstrap_cluster.sh"
-echo "  3. Run: ./deploy_pipeline.sh"
+echo "  1. Run: ./bootstrap_cluster.sh"
+echo "  2. Run: ./deploy_pipeline.sh"
 
 # Helpful URLs (after cluster bootstrap and app deploy)
 print_status "Planned access URLs (available after bootstrap and deploy):"
