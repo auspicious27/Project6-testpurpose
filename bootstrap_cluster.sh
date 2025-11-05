@@ -542,7 +542,20 @@ velero install \
 
 # Wait for Velero to be ready
 print_status "Waiting for Velero to be ready..."
-kubectl wait --for=condition=available --timeout=300s deployment/velero -n ${VELERO_NAMESPACE} || \
+sleep 15
+# Wait for pods to appear first
+for i in {1..30}; do
+    if kubectl get pods -n ${VELERO_NAMESPACE} -l component=velero 2>/dev/null | grep -v NAME | grep -q .; then
+        break
+    fi
+    # Also check for deployment
+    if kubectl get deployment velero -n ${VELERO_NAMESPACE} 2>/dev/null | grep -q velero; then
+        break
+    fi
+    sleep 5
+done
+
+kubectl wait --for=condition=available --timeout=300s deployment/velero -n ${VELERO_NAMESPACE} 2>/dev/null || \
     print_warning "Velero may still be starting"
 
 # Create ArgoCD Application for GitOps
