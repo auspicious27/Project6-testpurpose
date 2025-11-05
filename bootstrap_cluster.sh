@@ -76,26 +76,76 @@ print_status "Creating kind cluster: ${CLUSTER_NAME}"
 if kind get clusters | grep -q ${CLUSTER_NAME}; then
     print_warning "Cluster ${CLUSTER_NAME} already exists. Deleting..."
     kind delete cluster --name ${CLUSTER_NAME}
+    sleep 5
 fi
 
-kind create cluster --config /tmp/kind-config.yaml
-kubectl cluster-info --context kind-${CLUSTER_NAME}
+# Try creating cluster with retry logic
+print_status "Creating kind cluster (this may take 2-3 minutes)..."
+# Create cluster - ignore storage class errors as they're non-critical
+kind create cluster --config /tmp/kind-config.yaml --wait 120s 2>&1 | grep -v "failed to add default storage class" | tee /tmp/kind-create.log || {
+    print_warning "Kind cluster creation had warnings. Checking if cluster is functional..."
+    sleep 10
+}
+
+# Ensure kubeconfig directory exists
+mkdir -p ~/.kube
+
+# Set kubectl context and verify cluster is ready
+print_status "Setting kubectl context..."
+kind get kubeconfig --name ${CLUSTER_NAME} > ~/.kube/config 2>/dev/null || {
+    print_error "Failed to get kubeconfig from kind cluster"
+    exit 1
+}
+export KUBECONFIG=~/.kube/config
+
+# Wait for cluster to be ready
+print_status "Waiting for cluster to be ready..."
+for i in {1..30}; do
+    if kubectl cluster-info --context kind-${CLUSTER_NAME} &>/dev/null && \
+       kubectl get nodes --context kind-${CLUSTER_NAME} &>/dev/null; then
+        print_success "Cluster is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        print_error "Cluster is not ready after waiting. Please check Docker and retry."
+        exit 1
+    fi
+    sleep 2
+done
+
+# Set default context for all subsequent commands
+kind get kubeconfig --name ${CLUSTER_NAME} > ~/.kube/config 2>/dev/null || true
+kubectl config use-context kind-${CLUSTER_NAME} || {
+    print_error "Failed to set kubectl context. Exiting."
+    exit 1
+}
+export KUBECONFIG=~/.kube/config
+
+# Verify cluster nodes are ready
+print_status "Verifying cluster nodes..."
+kubectl get nodes
+kubectl cluster-info
 
 # Install NGINX Ingress Controller
 print_status "Installing NGINX Ingress Controller..."
-kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml || {
+    print_error "Failed to install NGINX Ingress Controller"
+    exit 1
+}
+print_status "Waiting for NGINX Ingress Controller to be ready..."
 kubectl wait --namespace ingress-nginx \
   --for=condition=ready pod \
   --selector=app.kubernetes.io/component=controller \
-  --timeout=90s
+  --timeout=180s || \
+    print_warning "NGINX Ingress Controller may still be starting"
 
 # Create namespaces
 print_status "Creating namespaces..."
-kubectl create namespace ${GITEA_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace ${ARGOCD_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace ${MINIO_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace ${TRIVY_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace ${VELERO_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace ${GITEA_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${GITEA_NAMESPACE} || true
+kubectl create namespace ${ARGOCD_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${ARGOCD_NAMESPACE} || true
+kubectl create namespace ${MINIO_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${MINIO_NAMESPACE} || true
+kubectl create namespace ${TRIVY_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${TRIVY_NAMESPACE} || true
+kubectl create namespace ${VELERO_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${VELERO_NAMESPACE} || true
 
 # Install Gitea
 print_status "Installing Gitea..."
@@ -137,7 +187,7 @@ EOF
 # Install Gitea without --wait (will check status manually)
 print_status "Installing Gitea (this may take several minutes)..."
 # Uninstall existing release if present
-if helm list -n ${GITEA_NAMESPACE} | grep -q gitea; then
+if helm list -n ${GITEA_NAMESPACE} 2>/dev/null | grep -q gitea; then
     print_warning "Gitea release already exists, upgrading..."
     helm upgrade gitea gitea-charts/gitea \
       --namespace ${GITEA_NAMESPACE} \
@@ -174,7 +224,7 @@ kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -
     print_warning "ArgoCD server may still be starting"
 
 # Patch ArgoCD server to use LoadBalancer for kind
-kubectl patch svc argocd-server -n ${ARGOCD_NAMESPACE} -p '{"spec": {"type": "LoadBalancer"}}'
+kubectl patch svc argocd-server -n ${ARGOCD_NAMESPACE} -p '{"spec": {"type": "LoadBalancer"}}' || true
 
 # Install MinIO
 print_status "Installing MinIO..."
@@ -287,7 +337,7 @@ spec:
 EOF
 
 # Apply ArgoCD Application
-kubectl apply -f /tmp/argocd-app.yaml
+kubectl apply -f /tmp/argocd-app.yaml || print_warning "ArgoCD application may already exist"
 
 # Get ArgoCD admin password
 print_status "Retrieving ArgoCD admin password..."

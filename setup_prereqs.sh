@@ -272,7 +272,7 @@ fi
 # Verify installations
 print_status "Verifying installations..."
 echo "Docker version: $(docker --version)"
-echo "kubectl version: $(kubectl version --client --short)"
+echo "kubectl version: $(kubectl version --client 2>/dev/null | grep -i client | head -1 || kubectl version --client)"
 echo "kind version: $(kind version)"
 echo "Helm version: $(helm version --short)"
 echo "ArgoCD CLI version: $(argocd version --client --short)"
