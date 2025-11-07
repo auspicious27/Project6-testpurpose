@@ -106,10 +106,14 @@ check_argocd() {
     
     # Check ArgoCD server
     if kubectl get deployment argocd-server -n argocd &> /dev/null; then
-        local replicas=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "ArgoCD server is running (${replicas}/${desired})"
         else
             print_error "ArgoCD server is not ready (${replicas}/${desired})"
@@ -143,10 +147,14 @@ check_gitea() {
     print_status "Checking Gitea..."
     
     if kubectl get deployment gitea -n gitea &> /dev/null; then
-        local replicas=$(kubectl get deployment gitea -n gitea -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment gitea -n gitea -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment gitea -n gitea -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment gitea -n gitea -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "Gitea is running (${replicas}/${desired})"
         else
             print_error "Gitea is not ready (${replicas}/${desired})"
@@ -163,10 +171,14 @@ check_minio() {
     print_status "Checking MinIO..."
     
     if kubectl get deployment minio -n minio &> /dev/null; then
-        local replicas=$(kubectl get deployment minio -n minio -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment minio -n minio -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment minio -n minio -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment minio -n minio -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "MinIO is running (${replicas}/${desired})"
         else
             print_error "MinIO is not ready (${replicas}/${desired})"
@@ -183,10 +195,14 @@ check_trivy() {
     print_status "Checking Trivy Operator..."
     
     if kubectl get deployment trivy-operator -n trivy-system &> /dev/null; then
-        local replicas=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "Trivy Operator is running (${replicas}/${desired})"
         else
             print_error "Trivy Operator is not ready (${replicas}/${desired})"
@@ -207,10 +223,14 @@ check_velero() {
     print_status "Checking Velero..."
     
     if kubectl get deployment velero -n velero &> /dev/null; then
-        local replicas=$(kubectl get deployment velero -n velero -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment velero -n velero -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment velero -n velero -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment velero -n velero -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "Velero is running (${replicas}/${desired})"
         else
             print_error "Velero is not ready (${replicas}/${desired})"
@@ -238,10 +258,14 @@ check_applications() {
     for app in "${apps[@]}"; do
         # Check in dev namespace
         if kubectl get deployment ${app} -n dev &> /dev/null; then
-            local replicas=$(kubectl get deployment ${app} -n dev -o jsonpath='{.status.readyReplicas}')
-            local desired=$(kubectl get deployment ${app} -n dev -o jsonpath='{.spec.replicas}')
+            local replicas=$(kubectl get deployment ${app} -n dev -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            local desired=$(kubectl get deployment ${app} -n dev -o jsonpath='{.spec.replicas}' 2>/dev/null)
             
-            if [ "$replicas" -eq "$desired" ]; then
+            # Default to 0 if empty
+            replicas=${replicas:-0}
+            desired=${desired:-0}
+            
+            if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
                 print_success "${app} is running in dev (${replicas}/${desired})"
             else
                 print_warning "${app} is not ready in dev (${replicas}/${desired})"
@@ -258,10 +282,14 @@ check_ingress() {
     
     # Check NGINX ingress controller
     if kubectl get deployment ingress-nginx-controller -n ingress-nginx &> /dev/null; then
-        local replicas=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "NGINX Ingress Controller is running (${replicas}/${desired})"
         else
             print_error "NGINX Ingress Controller is not ready (${replicas}/${desired})"

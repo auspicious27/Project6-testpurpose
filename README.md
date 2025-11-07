@@ -11,7 +11,8 @@ A comprehensive DevOps ecosystem integrating Flask web application with microser
 - [Detailed Setup](#detailed-setup)
 - [Usage](#usage)
 - [Access URLs](#access-urls)
- - [Manual Deployment and Testing](#manual-deployment-and-testing)
+- [Manual Deployment and Testing](#manual-deployment-and-testing)
+- [Testing Guide](#-testing-guide)
 - [Features](#features)
 - [Documentation](#documentation)
 - [Troubleshooting](#troubleshooting)
@@ -506,6 +507,323 @@ curl http://user-service:5001/api/users
 # Product service API
 curl http://product-service:5002/api/products
 ```
+
+## 🧪 Testing Guide
+
+This section provides comprehensive testing instructions for both project maintainers and students.
+
+### 📋 Pre-Testing Checklist
+
+Before running tests, ensure:
+- All prerequisites are installed (`./setup_prereqs.sh` completed successfully)
+- Kubernetes cluster is running (`kind get clusters` shows `devops-pipeline`)
+- All components are deployed (`./deploy_pipeline.sh` completed successfully)
+
+### 🔍 Running Health Checks
+
+The primary way to test the entire environment is using the health check script:
+
+```bash
+# Make script executable (if not already)
+chmod +x check_env.sh
+
+# Run comprehensive health checks
+./check_env.sh
+```
+
+**Expected Output:**
+- ✅ All required commands are installed (kubectl, kind, helm, argocd, trivy, velero)
+- ✅ Kubernetes cluster is running and all nodes are ready
+- ✅ All namespaces exist (argocd, gitea, minio, trivy-system, velero, dev, staging, production)
+- ✅ All infrastructure components are running (ArgoCD, Gitea, MinIO, Trivy Operator, Velero)
+- ✅ Applications are deployed and running
+- ✅ Ingress controller is running
+- ✅ Health report is generated
+
+**Understanding the Output:**
+- `[SUCCESS]` - Component is healthy and working
+- `[WARNING]` - Component exists but may not be fully ready (non-critical)
+- `[ERROR]` - Component is missing or not working (needs attention)
+
+### 🎓 For Students: Step-by-Step Testing
+
+#### Step 1: Verify Prerequisites
+
+```bash
+# Check if all tools are installed
+kubectl version --client
+kind version
+helm version
+argocd version --client
+trivy --version
+velero version --client
+```
+
+#### Step 2: Check Cluster Status
+
+```bash
+# Verify cluster is running
+kind get clusters
+
+# Check cluster nodes
+kubectl get nodes
+
+# Verify cluster connectivity
+kubectl cluster-info
+```
+
+#### Step 3: Verify Namespaces
+
+```bash
+# List all namespaces
+kubectl get namespaces
+
+# Expected namespaces:
+# - argocd
+# - gitea
+# - minio
+# - trivy-system
+# - velero
+# - dev
+# - staging
+# - production
+```
+
+#### Step 4: Check Infrastructure Components
+
+```bash
+# Check ArgoCD
+kubectl get pods -n argocd
+kubectl get applications -n argocd
+
+# Check Gitea
+kubectl get pods -n gitea
+
+# Check MinIO
+kubectl get pods -n minio
+
+# Check Trivy Operator
+kubectl get pods -n trivy-system
+
+# Check Velero
+kubectl get pods -n velero
+```
+
+#### Step 5: Verify Applications
+
+```bash
+# Check applications in dev namespace
+kubectl get deployments -n dev
+kubectl get pods -n dev
+kubectl get services -n dev
+
+# Expected applications:
+# - flask-app
+# - user-service
+# - product-service
+```
+
+#### Step 6: Test Application Endpoints
+
+```bash
+# Test Flask app health endpoint
+curl http://flask-app.local/api/health
+
+# Test Flask app home page
+curl http://flask-app.local/
+
+# Test from inside cluster (if services are not exposed)
+kubectl -n dev run test-curl --rm -it --image=curlimages/curl --restart=Never -- \
+  sh -c 'curl -s http://flask-app-service/api/health'
+```
+
+#### Step 7: Access Web UIs
+
+```bash
+# Get ArgoCD admin password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
+
+# Port forward to access UIs locally
+# ArgoCD (in one terminal)
+kubectl port-forward -n argocd service/argocd-server 8080:443
+
+# Gitea (in another terminal)
+kubectl port-forward -n gitea service/gitea-http 3000:3000
+
+# MinIO (in another terminal)
+kubectl port-forward -n minio service/minio 9000:9000
+```
+
+Then access:
+- ArgoCD: https://localhost:8080 (admin / [password from above])
+- Gitea: http://localhost:3000 (admin / admin123)
+- MinIO: http://localhost:9000 (minioadmin / minioadmin123)
+
+### 🧪 Advanced Testing
+
+#### Test Blue-Green Deployment
+
+```bash
+# Run blue-green deployment demo
+chmod +x switch_blue_green.sh
+./switch_blue_green.sh demo
+```
+
+This will:
+- Create blue and green deployments
+- Switch traffic between them
+- Validate health checks
+- Demonstrate zero-downtime deployment
+
+#### Test Backup and Restore
+
+```bash
+# Run backup/restore demo
+chmod +x backup_restore_demo.sh
+./backup_restore_demo.sh demo
+```
+
+This will:
+- Create a backup of the cluster
+- Simulate data loss
+- Restore from backup
+- Verify data integrity
+
+#### Test Security Scanning
+
+```bash
+# Scan Flask app image
+trivy image --severity HIGH,CRITICAL flask-app:latest
+
+# Scan User service image
+trivy image --severity HIGH,CRITICAL user-service:latest
+
+# Scan Product service image
+trivy image --severity HIGH,CRITICAL product-service:latest
+
+# Check in-cluster vulnerability reports
+kubectl get vulnerabilityreports -A
+```
+
+### 📊 Interpreting Test Results
+
+#### Successful Test Results
+
+A successful test should show:
+- ✅ All health checks pass
+- ✅ All pods are in `Running` state
+- ✅ All services are accessible
+- ✅ Applications respond to HTTP requests
+- ✅ ArgoCD applications are `Healthy` and `Synced`
+
+#### Common Issues and Solutions
+
+**Issue: Pods not starting**
+```bash
+# Check pod status
+kubectl describe pod <pod-name> -n <namespace>
+
+# Check pod logs
+kubectl logs <pod-name> -n <namespace>
+
+# Check events
+kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+```
+
+**Issue: Services not accessible**
+```bash
+# Check service endpoints
+kubectl get endpoints -n <namespace>
+
+# Check ingress
+kubectl get ingress -A
+
+# Verify DNS/hosts file
+cat /etc/hosts | grep flask-app.local
+```
+
+**Issue: ArgoCD not syncing**
+```bash
+# Check ArgoCD application status
+kubectl get applications -n argocd
+
+# Manually sync application
+argocd app sync devops-pipeline-dev
+
+# Check ArgoCD logs
+kubectl logs -n argocd deployment/argocd-application-controller
+```
+
+### 📝 Test Report Template
+
+After running tests, document your results:
+
+```markdown
+## Test Report
+
+**Date:** [Date]
+**Tester:** [Your Name]
+**Environment:** [Dev/Staging/Production]
+
+### Prerequisites
+- [ ] All tools installed
+- [ ] Cluster running
+- [ ] Components deployed
+
+### Health Checks
+- [ ] All commands available
+- [ ] Cluster healthy
+- [ ] All namespaces exist
+- [ ] Infrastructure components running
+- [ ] Applications deployed
+
+### Functional Tests
+- [ ] Flask app accessible
+- [ ] User service responding
+- [ ] Product service responding
+- [ ] ArgoCD UI accessible
+- [ ] Gitea UI accessible
+- [ ] MinIO UI accessible
+
+### Advanced Tests
+- [ ] Blue-green deployment works
+- [ ] Backup/restore works
+- [ ] Security scanning works
+
+### Issues Found
+[List any issues encountered]
+
+### Notes
+[Additional observations]
+```
+
+### 🎯 Quick Test Commands
+
+For quick verification, run these commands:
+
+```bash
+# Quick health check
+./check_env.sh | grep -E "(SUCCESS|ERROR)"
+
+# Check all pods status
+kubectl get pods -A | grep -v Running
+
+# Check all services
+kubectl get services -A
+
+# Check ingress
+kubectl get ingress -A
+
+# Test Flask app
+curl -s http://flask-app.local/api/health | jq . || curl -s http://flask-app.local/api/health
+```
+
+### 📚 Additional Resources
+
+- **Health Report**: Generated automatically by `check_env.sh` in `health-report-*.txt`
+- **Logs**: Check component logs using `kubectl logs`
+- **Documentation**: See `/docs` directory for detailed guides
+- **Troubleshooting**: See [Troubleshooting](#-troubleshooting) section
 
 ## ✨ Features
 
