@@ -6,7 +6,7 @@ metadata:
     app: flask-app
     version: v1
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: flask-app
@@ -33,11 +33,11 @@ spec:
               key: secret-key
         resources:
           requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
             memory: "64Mi"
             cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
         livenessProbe:
           httpGet:
             path: /api/health

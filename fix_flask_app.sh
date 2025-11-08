@@ -139,10 +139,14 @@ if kubectl get deployment flask-app -n dev &>/dev/null; then
     DESIRED=$(kubectl get deployment flask-app -n dev -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
     READY=$(kubectl get deployment flask-app -n dev -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     
+    # Default to 0 if empty
+    DESIRED=${DESIRED:-0}
+    READY=${READY:-0}
+    
     echo "  Desired replicas: $DESIRED"
     echo "  Ready replicas: $READY"
     
-    if [ "$READY" -eq 0 ] || [ "$READY" -lt "$DESIRED" ]; then
+    if [ -z "$READY" ] || [ "$READY" = "" ] || [ "$READY" -eq 0 ] || [ "$READY" -lt "$DESIRED" ]; then
         print_warning "Deployment not ready. Checking pod status..."
         
         # Check pod status
