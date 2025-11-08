@@ -161,8 +161,17 @@ else
     print_status "Run: ./sync_argocd_apps.sh to manually sync"
 fi
 
-# Fix 7: Create ingress if missing
-print_status "7. Ensuring ingress is created..."
+# Fix 7: Fix Flask application specifically
+print_status "7. Fixing Flask application..."
+if [ -f "./fix_flask_app.sh" ]; then
+    print_status "Running Flask app fix script..."
+    bash ./fix_flask_app.sh || print_warning "Flask app fix had warnings"
+else
+    print_warning "fix_flask_app.sh not found. Skipping Flask-specific fixes."
+fi
+
+# Fix 8: Create ingress if missing
+print_status "8. Ensuring ingress is created..."
 if ! kubectl get ingress flask-app-ingress -n dev &>/dev/null; then
     if kubectl get svc flask-app-service -n dev &>/dev/null; then
         print_status "Creating Flask app ingress..."
@@ -200,6 +209,8 @@ fi
 
 # Display status
 print_success "Fix operations completed!"
+echo ""
+print_status "💡 TIP: If Flask app still doesn't work, run: ./fix_flask_app.sh"
 echo ""
 print_status "📊 Current Status:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
