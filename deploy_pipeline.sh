@@ -209,11 +209,323 @@ trivy image --severity HIGH,CRITICAL flask-app:${VERSION} || print_warning "Secu
 trivy image --severity HIGH,CRITICAL user-service:${VERSION} || print_warning "Security scan found vulnerabilities"
 trivy image --severity HIGH,CRITICAL product-service:${VERSION} || print_warning "Security scan found vulnerabilities"
 
+# Wait for ingress to be ready
+print_status "Waiting for ingress to be ready..."
+sleep 10
+for i in {1..30}; do
+    if kubectl get ingress flask-app-ingress -n dev &>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+# Get ingress controller port
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}' 2>/dev/null || echo "80")
+INGRESS_HTTPS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}' 2>/dev/null || echo "443")
+
+# Get ArgoCD service port
+ARGOCD_PORT=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].port}' 2>/dev/null || echo "443")
+ARGOCD_NODEPORT=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null || echo "")
+
+# Get Gitea service port
+GITEA_PORT=$(kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].port}' 2>/dev/null || echo "3000")
+GITEA_NODEPORT=$(kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}' 2>/dev/null || echo "")
+
+# Get MinIO service port
+MINIO_PORT=$(kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].port}' 2>/dev/null || echo "9000")
+MINIO_NODEPORT=$(kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].nodePort}' 2>/dev/null || echo "")
+
+# Get local IP or use localhost
+LOCAL_IP="127.0.0.1"
+PUBLIC_IP=""
+IS_EC2=false
+
+# Detect if running on EC2
+if curl -s --max-time 2 http://169.254.169.254/latest/meta-data/ &>/dev/null; then
+    IS_EC2=true
+    # Get EC2 public IP
+    PUBLIC_IP=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "")
+    # Get EC2 private IP
+    PRIVATE_IP=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || echo "")
+    if [ -n "$PRIVATE_IP" ]; then
+        LOCAL_IP="$PRIVATE_IP"
+    fi
+fi
+
+# If not EC2, try to get local IP
+if [ "$IS_EC2" = false ] && command -v hostname &>/dev/null; then
+    ACTUAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+    if [[ "$ACTUAL_IP" != "127.0.0.1" ]] && [[ "$ACTUAL_IP" != "" ]]; then
+        LOCAL_IP="$ACTUAL_IP"
+    fi
+fi
+
+# If public IP not found, try other methods
+if [ -z "$PUBLIC_IP" ]; then
+    # Try to get public IP from external service
+    PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || curl -s --max-time 5 https://ifconfig.me 2>/dev/null || echo "")
+fi
+
+# Ensure ingress controller is NodePort for external access
+print_status "Configuring ingress for external access..."
+kubectl patch svc ingress-nginx-controller -n ingress-nginx --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "NodePort"}]' 2>/dev/null || true
+
+# Ensure Gitea service is NodePort for external access
+kubectl patch svc gitea-http -n gitea --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "NodePort"}]' 2>/dev/null || true
+
+# Ensure MinIO service is NodePort for external access (if exists)
+kubectl patch svc minio -n minio --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "NodePort"}]' 2>/dev/null || true
+
+# Ensure ArgoCD service is LoadBalancer/NodePort for external access
+kubectl patch svc argocd-server -n argocd --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "LoadBalancer"}]' 2>/dev/null || true
+
+# Wait for service updates
+sleep 5
+
+# Get actual NodePorts after patch
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}' 2>/dev/null || echo "80")
+INGRESS_HTTPS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}' 2>/dev/null || echo "443")
+
+# Function to test URL
+test_url() {
+    local url=$1
+    local name=$2
+    shift 2
+    local extra_args="$@"
+    local max_attempts=5
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        local http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 $extra_args "$url" 2>/dev/null || echo "000")
+        if echo "$http_code" | grep -qE "200|201|301|302"; then
+            return 0
+        fi
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+# Function to get port-forward command
+get_port_forward_cmd() {
+    local namespace=$1
+    local service=$2
+    local local_port=$3
+    local remote_port=$4
+    echo "kubectl port-forward -n $namespace svc/$service $local_port:$remote_port"
+}
+
+# Display URLs and setup port forwarding
 print_success "Pipeline deployment completed successfully!"
-print_status "Access URLs:"
-echo "  Flask App: http://flask-app.local"
-echo "  ArgoCD: http://argocd.local"
-print_status "Next steps:"
-echo "  1. Run: ./check_env.sh"
-echo "  2. Run: ./switch_blue_green.sh"
-echo "  3. Run: ./backup_restore_demo.sh"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_status "🌐 ACCESS URLs (Working URLs):"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Flask App URLs
+print_status "📱 Flask Application:"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    echo "   🌐 Public URL (EC2): http://$PUBLIC_IP:$INGRESS_PORT (Host: flask-app.local)"
+    echo "   🔗 Local URL: http://$LOCAL_IP:$INGRESS_PORT (Host: flask-app.local)"
+    echo "   📝 Add to /etc/hosts: $PUBLIC_IP flask-app.local"
+elif [ -n "$INGRESS_PORT" ] && [ "$INGRESS_PORT" != "80" ]; then
+    echo "   🌍 Ingress URL: http://flask-app.local:$INGRESS_PORT"
+    echo "   🔗 Direct URL: http://$LOCAL_IP:$INGRESS_PORT (Host: flask-app.local)"
+else
+    echo "   🌍 Ingress URL: http://flask-app.local"
+    echo "   🔗 Direct URL: http://$LOCAL_IP (Host: flask-app.local)"
+fi
+echo "   📋 Port Forward: $(get_port_forward_cmd dev flask-app-service 8080 80)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    echo "   🧪 Test Command: curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/api/health"
+else
+    echo "   🧪 Test Command: curl -H 'Host: flask-app.local' http://$LOCAL_IP:$INGRESS_PORT/api/health"
+fi
+echo ""
+
+# ArgoCD URLs
+print_status "🚀 ArgoCD Dashboard:"
+ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null || echo "N/A")
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$ARGOCD_NODEPORT" ]; then
+    echo "   🌐 Public URL (EC2): https://$PUBLIC_IP:$ARGOCD_NODEPORT"
+    echo "   🔗 Local URL: https://$LOCAL_IP:$ARGOCD_NODEPORT"
+elif [ -n "$ARGOCD_NODEPORT" ]; then
+    echo "   🌍 URL: https://argocd.local:$ARGOCD_NODEPORT"
+    echo "   🔗 Direct URL: https://$LOCAL_IP:$ARGOCD_NODEPORT"
+else
+    echo "   🌍 URL: https://argocd.local"
+    echo "   🔗 Direct URL: https://$LOCAL_IP"
+fi
+echo "   👤 Username: admin"
+echo "   🔑 Password: $ARGOCD_PASSWORD"
+echo "   📋 Port Forward: $(get_port_forward_cmd argocd argocd-server 8081 443)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$ARGOCD_NODEPORT" ]; then
+    echo "   🧪 Test Command: curl -k https://$PUBLIC_IP:$ARGOCD_NODEPORT/api/version"
+else
+    echo "   🧪 Test Command: curl -k https://argocd.local/api/version"
+fi
+echo ""
+
+# Gitea URLs
+print_status "📦 Gitea (Git Repository):"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$GITEA_NODEPORT" ]; then
+    echo "   🌐 Public URL (EC2): http://$PUBLIC_IP:$GITEA_NODEPORT"
+    echo "   🔗 Local URL: http://$LOCAL_IP:$GITEA_NODEPORT"
+elif [ -n "$GITEA_NODEPORT" ]; then
+    echo "   🌍 URL: http://gitea.local:$GITEA_NODEPORT"
+    echo "   🔗 Direct URL: http://$LOCAL_IP:$GITEA_NODEPORT"
+else
+    echo "   🌍 URL: http://gitea.local"
+    echo "   🔗 Direct URL: http://$LOCAL_IP"
+fi
+echo "   👤 Username: admin"
+echo "   🔑 Password: admin123"
+echo "   📋 Port Forward: $(get_port_forward_cmd gitea gitea-http 3000 3000)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$GITEA_NODEPORT" ]; then
+    echo "   🧪 Test Command: curl http://$PUBLIC_IP:$GITEA_NODEPORT/api/v1/version"
+else
+    echo "   🧪 Test Command: curl http://gitea.local/api/v1/version"
+fi
+echo ""
+
+# MinIO URLs
+print_status "💾 MinIO (Object Storage):"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$MINIO_NODEPORT" ]; then
+    echo "   🌐 Public URL (EC2): http://$PUBLIC_IP:$MINIO_NODEPORT"
+    echo "   🔗 Local URL: http://$LOCAL_IP:$MINIO_NODEPORT"
+elif [ -n "$MINIO_NODEPORT" ]; then
+    echo "   🌍 URL: http://minio.local:$MINIO_NODEPORT"
+    echo "   🔗 Direct URL: http://$LOCAL_IP:$MINIO_NODEPORT"
+else
+    echo "   🌍 URL: http://minio.local"
+    echo "   🔗 Direct URL: http://$LOCAL_IP"
+fi
+echo "   👤 Username: minioadmin"
+echo "   🔑 Password: minioadmin123"
+echo "   📋 Port Forward: $(get_port_forward_cmd minio minio 9000 9000)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$MINIO_NODEPORT" ]; then
+    echo "   🧪 Test Command: curl http://$PUBLIC_IP:$MINIO_NODEPORT/minio/health/live"
+else
+    echo "   🧪 Test Command: curl http://minio.local/minio/health/live"
+fi
+echo ""
+
+# Microservices URLs (via port-forward)
+print_status "🔧 Microservices (Port Forward Required):"
+echo "   👥 User Service: $(get_port_forward_cmd dev user-service-service 5001 80)"
+echo "   📦 Product Service: $(get_port_forward_cmd dev product-service-service 5002 80)"
+echo ""
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_status "✅ QUICK ACCESS COMMANDS:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "# Test Flask App:"
+echo "curl -H 'Host: flask-app.local' http://$LOCAL_IP:$INGRESS_PORT/api/health"
+echo ""
+echo "# Access ArgoCD (in separate terminal):"
+echo "kubectl port-forward -n argocd svc/argocd-server 8081:443"
+echo "echo 'Then open: https://localhost:8081'"
+echo ""
+echo "# Access Gitea (in separate terminal):"
+echo "kubectl port-forward -n gitea svc/gitea-http 3000:3000"
+echo "echo 'Then open: http://localhost:3000'"
+echo ""
+echo "# Access MinIO (in separate terminal):"
+echo "kubectl port-forward -n minio svc/minio 9000:9000"
+echo "echo 'Then open: http://localhost:9000'"
+echo ""
+
+# Test URLs if curl is available
+if command -v curl &>/dev/null; then
+    print_status "🧪 Testing URLs..."
+    echo ""
+    
+    # Test Flask App
+    if [ -n "$INGRESS_PORT" ] && [ "$INGRESS_PORT" != "80" ]; then
+        TEST_URL="http://$LOCAL_IP:$INGRESS_PORT/api/health"
+    else
+        TEST_URL="http://$LOCAL_IP/api/health"
+    fi
+    if test_url "$TEST_URL" "Flask App" -H "Host: flask-app.local"; then
+        print_success "✅ Flask App is accessible!"
+    else
+        print_warning "⚠️  Flask App may need port forwarding. Run: kubectl port-forward -n dev svc/flask-app-service 8080:80"
+    fi
+    
+    # Test Gitea
+    if [ -n "$GITEA_NODEPORT" ]; then
+        GITEA_TEST_URL="http://$LOCAL_IP:$GITEA_NODEPORT"
+    else
+        GITEA_TEST_URL="http://$LOCAL_IP:3000"
+    fi
+    if test_url "$GITEA_TEST_URL" "Gitea" -H "Host: gitea.local"; then
+        print_success "✅ Gitea is accessible!"
+    else
+        print_warning "⚠️  Gitea may need port forwarding. Run: kubectl port-forward -n gitea svc/gitea-http 3000:3000"
+    fi
+    echo ""
+fi
+
+# AWS EC2 Security Group Instructions
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_status "🔒 AWS EC2 SECURITY GROUP CONFIGURATION:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "⚠️  IMPORTANT: Configure your EC2 Security Group to allow these ports:"
+    echo ""
+    echo "   Inbound Rules Required:"
+    echo "   ┌─────────────────────────────────────────────────────────────┐"
+    echo "   │ Type          │ Protocol │ Port Range │ Source              │"
+    echo "   ├─────────────────────────────────────────────────────────────┤"
+    echo "   │ Custom TCP    │ TCP      │ $INGRESS_PORT      │ 0.0.0.0/0 (or your IP) │"
+    echo "   │ Custom TCP    │ TCP      │ $INGRESS_HTTPS_PORT     │ 0.0.0.0/0 (or your IP) │"
+    if [ -n "$ARGOCD_NODEPORT" ]; then
+        echo "   │ Custom TCP    │ TCP      │ $ARGOCD_NODEPORT     │ 0.0.0.0/0 (or your IP) │"
+    fi
+    if [ -n "$GITEA_NODEPORT" ]; then
+        echo "   │ Custom TCP    │ TCP      │ $GITEA_NODEPORT     │ 0.0.0.0/0 (or your IP) │"
+    fi
+    if [ -n "$MINIO_NODEPORT" ]; then
+        echo "   │ Custom TCP    │ TCP      │ $MINIO_NODEPORT     │ 0.0.0.0/0 (or your IP) │"
+    fi
+    echo "   └─────────────────────────────────────────────────────────────┘"
+    echo ""
+    echo "   📋 AWS CLI Command to add rules:"
+    echo "   # Get your security group ID first:"
+    echo "   aws ec2 describe-instances --instance-ids \$(ec2-metadata --instance-id | cut -d ' ' -f2) --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text"
+    echo ""
+    echo "   # Then add rules (replace sg-xxxxx with your security group ID):"
+    echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $INGRESS_PORT --cidr 0.0.0.0/0"
+    echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $INGRESS_HTTPS_PORT --cidr 0.0.0.0/0"
+    if [ -n "$ARGOCD_NODEPORT" ]; then
+        echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $ARGOCD_NODEPORT --cidr 0.0.0.0/0"
+    fi
+    if [ -n "$GITEA_NODEPORT" ]; then
+        echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $GITEA_NODEPORT --cidr 0.0.0.0/0"
+    fi
+    if [ -n "$MINIO_NODEPORT" ]; then
+        echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $MINIO_NODEPORT --cidr 0.0.0.0/0"
+    fi
+    echo ""
+    echo "   🌐 Your EC2 Public IP: $PUBLIC_IP"
+    echo "   🔗 Your EC2 Private IP: $LOCAL_IP"
+    echo ""
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_status "📚 Next Steps:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  1. Run: ./check_env.sh (Check environment health)"
+echo "  2. Run: ./switch_blue_green.sh (Test blue-green deployment)"
+echo "  3. Run: ./backup_restore_demo.sh (Test backup/restore)"
+echo ""
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    print_status "💡 TIP: After configuring Security Group, access your services using Public IP URLs above"
+    echo "   Example: http://$PUBLIC_IP:$INGRESS_PORT (with Host header: flask-app.local)"
+else
+    print_status "💡 TIP: If URLs don't work, use port-forward commands shown above in separate terminals"
+fi
+echo ""

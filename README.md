@@ -16,6 +16,7 @@ A comprehensive DevOps ecosystem integrating Flask web application with microser
 - [Features](#features)
 - [Documentation](#documentation)
 - [Troubleshooting](#troubleshooting)
+- [Complete Command Reference](#-complete-command-reference)
 - [Contributing](#contributing)
 
 ## 🏗️ Overview
@@ -190,7 +191,9 @@ chmod +x setup_prereqs.sh bootstrap_cluster.sh deploy_pipeline.sh check_env.sh
 ./setup_prereqs.sh && ./bootstrap_cluster.sh && ./deploy_pipeline.sh && ./check_env.sh
 ```
 
-**Note:** The scripts support running as root user on Amazon Linux 2023 or other RHEL-based systems. Sudo commands will be automatically skipped when running as root.
+**Note:** 
+- The scripts support running as root user on Amazon Linux 2023 or other RHEL-based systems. Sudo commands will be automatically skipped when running as root.
+- **For AWS EC2:** The deployment script automatically detects EC2 instances and configures services for external access. After deployment, configure your Security Group with the ports shown in the output.
 
 ### Verify Installation
 
@@ -281,7 +284,9 @@ chmod +x check_env.sh
 
 ## 🌐 Access URLs
 
-After successful installation, access your applications:
+After successful installation, access your applications. The deployment script automatically detects if you're running on AWS EC2 and provides appropriate URLs.
+
+### Local/Development Access
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
@@ -290,12 +295,102 @@ After successful installation, access your applications:
 | **MinIO** | http://minio.local | minioadmin/minioadmin123 |
 | **ArgoCD** | http://argocd.local | admin/[see below] |
 
+### AWS EC2 Deployment
+
+When deploying on AWS EC2, the script automatically:
+- ✅ Detects EC2 instance (via metadata service)
+- ✅ Retrieves Public IP and Private IP
+- ✅ Configures services as NodePort for external access
+- ✅ Generates working URLs with Public IP
+- ✅ Provides Security Group configuration instructions
+
+**After running `./deploy_pipeline.sh` on EC2, you'll see:**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌐 ACCESS URLs (Working URLs):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 Flask Application:
+   🌐 Public URL (EC2): http://54.123.45.67:31234 (Host: flask-app.local)
+   🔗 Local URL: http://172.31.12.34:31234 (Host: flask-app.local)
+   🧪 Test Command: curl -H 'Host: flask-app.local' http://54.123.45.67:31234/api/health
+
+🚀 ArgoCD Dashboard:
+   🌐 Public URL (EC2): https://54.123.45.67:30443
+   👤 Username: admin
+   🔑 Password: [auto-generated]
+
+... (and more services)
+```
+
 ### Get ArgoCD Password
 
 ```bash
 # Get ArgoCD admin password
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
 ```
+
+### AWS EC2 Security Group Configuration
+
+**⚠️ IMPORTANT:** After deployment on EC2, configure your Security Group to allow inbound traffic on the NodePorts shown in the deployment output.
+
+**Example Security Group Rules:**
+
+| Type | Protocol | Port Range | Source | Description |
+|------|----------|------------|--------|-------------|
+| Custom TCP | TCP | 30000-32767 | 0.0.0.0/0 | Ingress Controller (HTTP) |
+| Custom TCP | TCP | 30000-32767 | 0.0.0.0/0 | Ingress Controller (HTTPS) |
+| Custom TCP | TCP | 30000-32767 | 0.0.0.0/0 | ArgoCD Dashboard |
+| Custom TCP | TCP | 30000-32767 | 0.0.0.0/0 | Gitea |
+| Custom TCP | TCP | 30000-32767 | 0.0.0.0/0 | MinIO |
+
+**AWS CLI Commands:**
+
+```bash
+# Get your security group ID
+SG_ID=$(aws ec2 describe-instances \
+  --instance-ids $(ec2-metadata --instance-id | cut -d ' ' -f2) \
+  --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
+  --output text)
+
+# Add rules (replace PORT with actual NodePort from deployment output)
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol tcp \
+  --port <INGRESS_PORT> \
+  --cidr 0.0.0.0/0
+```
+
+**Or via AWS Console:**
+1. Go to EC2 → Security Groups
+2. Select your instance's security group
+3. Add Inbound Rules for the ports shown in deployment output
+4. Allow traffic from `0.0.0.0/0` (or restrict to your IP for security)
+
+### Port Forwarding (Alternative Access Method)
+
+If you prefer port forwarding instead of NodePort:
+
+```bash
+# Flask App
+kubectl port-forward -n dev svc/flask-app-service 8080:80
+
+# ArgoCD
+kubectl port-forward -n argocd svc/argocd-server 8081:443
+
+# Gitea
+kubectl port-forward -n gitea svc/gitea-http 3000:3000
+
+# MinIO
+kubectl port-forward -n minio svc/minio 9000:9000
+```
+
+Then access via:
+- Flask App: http://localhost:8080
+- ArgoCD: https://localhost:8081
+- Gitea: http://localhost:3000
+- MinIO: http://localhost:9000
 
 ## 🛠️ Manual Deployment and Testing
 
@@ -412,6 +507,7 @@ fi
 
 ### 5) Test manually
 
+**Local/Development:**
 ```bash
 # App health
 curl -s http://flask-app.local/api/health | jq . || curl -s http://flask-app.local/api/health
@@ -421,7 +517,24 @@ curl -I http://flask-app.local/
 
 # Service-to-service endpoints (inside cluster)
 kubectl -n dev run tmp --rm -it --image=curlimages/curl -- /bin/sh -lc \
-  'curl -s user-service:5001/api/users && echo && curl -s product-service:5002/api/products && echo'
+  'curl -s http://user-service-service/api/users && echo && curl -s http://product-service-service/api/products && echo'
+```
+
+**AWS EC2:**
+```bash
+# Get EC2 Public IP and Ingress Port
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+
+# App health (from EC2)
+curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/api/health
+
+# Home page (from EC2)
+curl -H 'Host: flask-app.local' -I http://$PUBLIC_IP:$INGRESS_PORT/
+
+# Service-to-service endpoints (inside cluster)
+kubectl -n dev run tmp --rm -it --image=curlimages/curl -- /bin/sh -lc \
+  'curl -s http://user-service-service/api/users && echo && curl -s http://product-service-service/api/products && echo'
 ```
 
 Notes:
@@ -490,22 +603,59 @@ kubectl logs -n dev deployment/product-service
 
 #### Flask Web Application
 
+**Local/Development:**
 ```bash
 # Access via browser
 open http://flask-app.local
 
 # Or via curl
 curl http://flask-app.local/api/health
+
+# Test home page
+curl http://flask-app.local/
+```
+
+**AWS EC2 (After deployment):**
+```bash
+# Get your EC2 Public IP and Ingress Port from deploy_pipeline.sh output
+# Example: Public IP: 54.123.45.67, Ingress Port: 31234
+
+# Test Flask App (replace with your actual IP and port)
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+
+# Test health endpoint
+curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/api/health
+
+# Test home page
+curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/
+
+# Or from your local machine (replace with EC2 Public IP)
+curl -H 'Host: flask-app.local' http://<EC2_PUBLIC_IP>:<NODEPORT>/api/health
 ```
 
 #### Microservices APIs
 
+**From inside cluster:**
 ```bash
-# User service API
-curl http://user-service:5001/api/users
+# User service API (from inside cluster)
+kubectl -n dev run test-user --rm -it --image=curlimages/curl --restart=Never -- \
+  sh -c 'curl -s http://user-service-service/api/users'
 
-# Product service API
-curl http://product-service:5002/api/products
+# Product service API (from inside cluster)
+kubectl -n dev run test-product --rm -it --image=curlimages/curl --restart=Never -- \
+  sh -c 'curl -s http://product-service-service/api/products'
+```
+
+**Via Port Forward (Local):**
+```bash
+# User Service
+kubectl port-forward -n dev svc/user-service-service 5001:80
+# Then: curl http://localhost:5001/api/users
+
+# Product Service
+kubectl port-forward -n dev svc/product-service-service 5002:80
+# Then: curl http://localhost:5002/api/products
 ```
 
 ## 🧪 Testing Guide
@@ -625,6 +775,7 @@ kubectl get services -n dev
 
 #### Step 6: Test Application Endpoints
 
+**Local/Development:**
 ```bash
 # Test Flask app health endpoint
 curl http://flask-app.local/api/health
@@ -637,8 +788,25 @@ kubectl -n dev run test-curl --rm -it --image=curlimages/curl --restart=Never --
   sh -c 'curl -s http://flask-app-service/api/health'
 ```
 
+**AWS EC2:**
+```bash
+# Get EC2 Public IP and Ingress Port
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+
+# Test Flask app health endpoint (from EC2)
+curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/api/health
+
+# Test Flask app home page (from EC2)
+curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/
+
+# Test from your local machine (replace with actual values)
+curl -H 'Host: flask-app.local' http://<EC2_PUBLIC_IP>:<NODEPORT>/api/health
+```
+
 #### Step 7: Access Web UIs
 
+**Local/Development (Port Forwarding):**
 ```bash
 # Get ArgoCD admin password
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
@@ -658,6 +826,30 @@ Then access:
 - ArgoCD: https://localhost:8080 (admin / [password from above])
 - Gitea: http://localhost:3000 (admin / admin123)
 - MinIO: http://localhost:9000 (minioadmin / minioadmin123)
+
+**AWS EC2 (Direct Access via Public IP):**
+```bash
+# Get EC2 Public IP
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+
+# Get NodePorts (from deploy_pipeline.sh output or manually)
+ARGOCD_PORT=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}')
+GITEA_PORT=$(kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}')
+MINIO_PORT=$(kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].nodePort}')
+
+# Get ArgoCD password
+ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🌐 EC2 Access URLs:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "ArgoCD:  https://$PUBLIC_IP:$ARGOCD_PORT (admin / $ARGOCD_PASSWORD)"
+echo "Gitea:   http://$PUBLIC_IP:$GITEA_PORT (admin / admin123)"
+echo "MinIO:   http://$PUBLIC_IP:$MINIO_PORT (minioadmin / minioadmin123)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+```
+
+**⚠️ Important:** Before accessing from browser, ensure Security Group allows inbound traffic on these ports!
 
 ### 🧪 Advanced Testing
 
@@ -816,6 +1008,31 @@ kubectl get ingress -A
 
 # Test Flask app
 curl -s http://flask-app.local/api/health | jq . || curl -s http://flask-app.local/api/health
+```
+
+**AWS EC2:**
+```bash
+# Quick health check
+./check_env.sh | grep -E "(SUCCESS|ERROR)"
+
+# Get EC2 Public IP and Ports
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+
+# Check all pods status
+kubectl get pods -A | grep -v Running
+
+# Check all services (verify NodePort types)
+kubectl get services -A | grep -E "NodePort|LoadBalancer"
+
+# Check all ingress
+kubectl get ingress -A
+
+# Test Flask app (from EC2)
+curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/api/health
+
+# Test from local machine (replace with your EC2 IP)
+curl -H 'Host: flask-app.local' http://<EC2_PUBLIC_IP>:<NODEPORT>/api/health
 ```
 
 ### 📚 Additional Resources
@@ -1119,6 +1336,51 @@ argocd app sync devops-pipeline-dev --force
 kubectl port-forward -n argocd service/argocd-server 8080:443
 ```
 
+#### AWS EC2 Deployment Issues
+
+**Issue:** URLs not accessible from outside EC2
+
+**Solution:**
+1. Check Security Group rules - ensure NodePorts are open
+2. Verify services are NodePort type:
+   ```bash
+   kubectl get svc -n ingress-nginx ingress-nginx-controller
+   kubectl get svc -n gitea gitea-http
+   kubectl get svc -n minio minio
+   ```
+3. Get actual NodePorts:
+   ```bash
+   kubectl get svc -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.type}{"\t"}{range .spec.ports[*]}{.nodePort}{"\n"}{end}{end}' | grep NodePort
+   ```
+4. Add Security Group rules for the ports shown above
+
+**Issue:** EC2 Public IP not detected
+
+**Solution:**
+```bash
+# Manually get EC2 public IP
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+echo "Public IP: $PUBLIC_IP"
+
+# Or use external service
+PUBLIC_IP=$(curl -s https://api.ipify.org)
+echo "Public IP: $PUBLIC_IP"
+```
+
+**Issue:** Services not accessible via Public IP
+
+**Solution:**
+1. Ensure Security Group allows inbound traffic on NodePorts
+2. Check if services are running:
+   ```bash
+   kubectl get pods -A
+   kubectl get svc -A
+   ```
+3. Test from EC2 instance itself:
+   ```bash
+   curl -H 'Host: flask-app.local' http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):<NODEPORT>/api/health
+   ```
+
 ### Health Check Commands
 
 ```bash
@@ -1196,6 +1458,156 @@ git push origin feature/new-feature
 
 # Test backup/restore
 ./backup_restore_demo.sh demo
+```
+
+## 📚 Complete Command Reference
+
+### Setup Commands
+
+```bash
+# Complete setup (one command)
+git clone https://github.com/auspicious27/Project6-testpurpose.git
+cd Project6-testpurpose
+chmod +x *.sh
+./setup_prereqs.sh && ./bootstrap_cluster.sh && ./deploy_pipeline.sh && ./check_env.sh
+```
+
+### EC2 Deployment Commands
+
+```bash
+# On AWS EC2 - Complete deployment
+git clone https://github.com/auspicious27/Project6-testpurpose.git
+cd Project6-testpurpose
+chmod +x *.sh
+./setup_prereqs.sh && ./bootstrap_cluster.sh && ./deploy_pipeline.sh
+
+# After deployment, get URLs and configure Security Group
+# URLs will be shown in deploy_pipeline.sh output
+# Configure Security Group with ports shown in output
+```
+
+### Get EC2 Information
+
+```bash
+# Get EC2 Public IP
+curl -s http://169.254.169.254/latest/meta-data/public-ipv4
+
+# Get EC2 Private IP
+curl -s http://169.254.169.254/latest/meta-data/local-ipv4
+
+# Get EC2 Instance ID
+ec2-metadata --instance-id | cut -d ' ' -f2
+
+# Get Security Group ID
+aws ec2 describe-instances \
+  --instance-ids $(ec2-metadata --instance-id | cut -d ' ' -f2) \
+  --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
+  --output text
+```
+
+### Get Service Ports
+
+```bash
+# Get Ingress Controller NodePort
+kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}'
+
+# Get ArgoCD NodePort
+kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}'
+
+# Get Gitea NodePort
+kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}'
+
+# Get MinIO NodePort
+kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].nodePort}'
+
+# Get all NodePorts at once
+kubectl get svc -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.type}{"\t"}{range .spec.ports[*]}{.nodePort}{"\n"}{end}{end}' | grep NodePort
+```
+
+### Test URLs (EC2)
+
+```bash
+# Get all info at once
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+ARGOCD_PORT=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}')
+GITEA_PORT=$(kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}')
+MINIO_PORT=$(kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].nodePort}')
+
+# Test Flask App
+curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/api/health
+
+# Test ArgoCD
+curl -k https://$PUBLIC_IP:$ARGOCD_PORT/api/version
+
+# Test Gitea
+curl http://$PUBLIC_IP:$GITEA_PORT/api/v1/version
+
+# Test MinIO
+curl http://$PUBLIC_IP:$MINIO_PORT/minio/health/live
+```
+
+### Security Group Configuration (AWS CLI)
+
+```bash
+# Get Security Group ID
+SG_ID=$(aws ec2 describe-instances \
+  --instance-ids $(ec2-metadata --instance-id | cut -d ' ' -f2) \
+  --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
+  --output text)
+
+# Get all NodePorts
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+INGRESS_HTTPS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}')
+ARGOCD_PORT=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}')
+GITEA_PORT=$(kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}')
+MINIO_PORT=$(kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].nodePort}')
+
+# Add Security Group rules
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port $INGRESS_PORT --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port $INGRESS_HTTPS_PORT --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port $ARGOCD_PORT --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port $GITEA_PORT --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port $MINIO_PORT --cidr 0.0.0.0/0
+```
+
+### Common Operations
+
+```bash
+# Check cluster status
+kubectl cluster-info
+kubectl get nodes
+
+# Check all resources
+kubectl get all -A
+
+# Check specific namespace
+kubectl get all -n dev
+
+# View logs
+kubectl logs -n dev deployment/flask-app
+kubectl logs -n argocd deployment/argocd-server
+
+# Get ArgoCD password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
+
+# Port forwarding (local access)
+kubectl port-forward -n dev svc/flask-app-service 8080:80
+kubectl port-forward -n argocd svc/argocd-server 8081:443
+kubectl port-forward -n gitea svc/gitea-http 3000:3000
+kubectl port-forward -n minio svc/minio 9000:9000
+
+# Restart deployments
+kubectl rollout restart deployment/flask-app -n dev
+kubectl rollout restart deployment/user-service -n dev
+kubectl rollout restart deployment/product-service -n dev
+
+# Scale deployments
+kubectl scale deployment/flask-app --replicas=3 -n dev
+
+# Delete and recreate
+kubectl delete deployment flask-app -n dev
+kubectl apply -f apps/flask-app/deployment.yaml
 ```
 
 ## 📄 License
