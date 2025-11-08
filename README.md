@@ -2,7 +2,9 @@
 
 A comprehensive DevOps ecosystem integrating Flask web application with microservices architecture, featuring GitOps with ArgoCD, automated CI/CD, container security scanning, multi-environment deployment, blue-green strategy, and backup & disaster recovery.
 
-## ⚡ Quick Start (4 Simple Steps)
+## ⚡ Quick Start
+
+### Fresh Installation (4 Simple Steps)
 
 ```bash
 # Step 1: Install prerequisites
@@ -19,6 +21,15 @@ chmod +x check_env.sh && ./check_env.sh
 ```
 
 **Then:** Open ports 30080-30085 and 30500 in AWS Security Group and access via `http://YOUR_IP:PORT`
+
+### If Cluster Already Exists (Reset and Recreate)
+
+```bash
+# Complete reset and setup with all fixes
+chmod +x reset_and_setup.sh && ./reset_and_setup.sh
+```
+
+This will delete the existing cluster and recreate with all ports properly mapped.
 
 ## 📋 Table of Contents
 
