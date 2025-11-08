@@ -103,8 +103,38 @@ else
     fi
 fi
 
-# Step 5: Check deployment status
-print_status "5. Checking deployment status..."
+# Step 5: Check and fix pending pods
+print_status "5. Checking for pending pods..."
+PENDING_PODS=$(kubectl get pods -n dev -l app=flask-app --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l || echo "0")
+
+if [ "$PENDING_PODS" -gt 0 ]; then
+    print_warning "Found $PENDING_PODS pending pod(s). Fixing..."
+    
+    # Check why pods are pending
+    for pod in $(kubectl get pods -n dev -l app=flask-app --field-selector=status.phase=Pending -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        print_status "Checking pod: $pod"
+        kubectl describe pod "$pod" -n dev | grep -A 5 "Events:" || true
+        REASON=$(kubectl get pod "$pod" -n dev -o jsonpath='{.status.conditions[?(@.type=="PodScheduled")].reason}' 2>/dev/null || echo "Unknown")
+        print_status "  Reason: $REASON"
+    done
+    
+    # Reduce resource requests if too high
+    print_status "Reducing resource requests to allow scheduling..."
+    kubectl patch deployment flask-app -n dev --type json -p='[
+        {"op": "replace", "path": "/spec/template/spec/containers/0/resources/requests/memory", "value": "64Mi"},
+        {"op": "replace", "path": "/spec/template/spec/containers/0/resources/requests/cpu", "value": "50m"},
+        {"op": "replace", "path": "/spec/template/spec/containers/0/resources/limits/memory", "value": "128Mi"},
+        {"op": "replace", "path": "/spec/template/spec/containers/0/resources/limits/cpu", "value": "100m"}
+    ]' 2>/dev/null || print_warning "Could not patch resources"
+    
+    # Delete pending pods to force reschedule
+    print_status "Deleting pending pods to force reschedule..."
+    kubectl delete pods -n dev -l app=flask-app --field-selector=status.phase=Pending --grace-period=0 --force 2>/dev/null || true
+    sleep 10
+fi
+
+# Step 6: Check deployment status
+print_status "6. Checking deployment status..."
 if kubectl get deployment flask-app -n dev &>/dev/null; then
     DESIRED=$(kubectl get deployment flask-app -n dev -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
     READY=$(kubectl get deployment flask-app -n dev -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
@@ -115,18 +145,26 @@ if kubectl get deployment flask-app -n dev &>/dev/null; then
     if [ "$READY" -eq 0 ] || [ "$READY" -lt "$DESIRED" ]; then
         print_warning "Deployment not ready. Checking pod status..."
         
-        # Check pod events
+        # Check pod status
         kubectl get pods -n dev -l app=flask-app || true
         echo ""
-        print_status "Pod events:"
-        kubectl get events -n dev --sort-by='.lastTimestamp' | grep flask-app | tail -5 || true
         
-        # Check pod logs if any pod exists
-        POD_NAME=$(kubectl get pods -n dev -l app=flask-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-        if [ -n "$POD_NAME" ]; then
-            echo ""
-            print_status "Pod logs (last 20 lines):"
-            kubectl logs -n dev "$POD_NAME" --tail=20 || true
+        # Check if pods are still pending
+        PENDING_COUNT=$(kubectl get pods -n dev -l app=flask-app --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l || echo "0")
+        if [ "$PENDING_COUNT" -gt 0 ]; then
+            print_error "Pods are still pending. Run: ./fix_pending_pods.sh"
+            print_status "Or check node resources: kubectl describe nodes"
+        else
+            print_status "Pod events:"
+            kubectl get events -n dev --sort-by='.lastTimestamp' | grep flask-app | tail -5 || true
+            
+            # Check pod logs if any pod exists
+            POD_NAME=$(kubectl get pods -n dev -l app=flask-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$POD_NAME" ]; then
+                echo ""
+                print_status "Pod logs (last 20 lines):"
+                kubectl logs -n dev "$POD_NAME" --tail=20 2>/dev/null || true
+            fi
         fi
         
         print_status "Waiting for deployment to be ready..."

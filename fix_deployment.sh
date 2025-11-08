@@ -161,8 +161,17 @@ else
     print_status "Run: ./sync_argocd_apps.sh to manually sync"
 fi
 
-# Fix 7: Fix Flask application specifically
-print_status "7. Fixing Flask application..."
+# Fix 7: Fix pending pods first
+print_status "7. Fixing pending pods..."
+if [ -f "./fix_pending_pods.sh" ]; then
+    print_status "Running pending pods fix script..."
+    bash ./fix_pending_pods.sh || print_warning "Pending pods fix had warnings"
+else
+    print_warning "fix_pending_pods.sh not found. Skipping pending pods fixes."
+fi
+
+# Fix 8: Fix Flask application specifically
+print_status "8. Fixing Flask application..."
 if [ -f "./fix_flask_app.sh" ]; then
     print_status "Running Flask app fix script..."
     bash ./fix_flask_app.sh || print_warning "Flask app fix had warnings"
