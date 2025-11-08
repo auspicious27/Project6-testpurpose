@@ -281,6 +281,10 @@ kubectl create namespace ${ARGOCD_NAMESPACE} --dry-run=client -o yaml | kubectl 
 kubectl create namespace ${MINIO_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${MINIO_NAMESPACE} || true
 kubectl create namespace ${TRIVY_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${TRIVY_NAMESPACE} || true
 kubectl create namespace ${VELERO_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace ${VELERO_NAMESPACE} || true
+# Create application namespaces
+kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace dev || true
+kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace staging || true
+kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace production || true
 
 # Install Gitea
 print_status "Installing Gitea..."
@@ -459,11 +463,9 @@ service:
   port: 9000
 ingress:
   enabled: true
-  hosts:
-    - host: minio.local
-      paths:
-        - path: /
-          pathType: Prefix
+  ingressClassName: nginx
+  host: minio.local
+  path: /
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
 EOF

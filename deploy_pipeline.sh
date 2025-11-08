@@ -136,21 +136,49 @@ done
 
 # Sync applications using ArgoCD CLI if available, otherwise use kubectl patch
 print_status "Syncing ArgoCD applications..."
-if command -v argocd &>/dev/null; then
-    print_status "Using ArgoCD CLI for syncing..."
-    # Note: ArgoCD CLI requires server URL and login - skip for now, use kubectl
-fi
 
-# Update sync policies
+# Update sync policies to enable automated sync
+print_status "Enabling automated sync for applications..."
 kubectl patch application devops-pipeline-dev -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null || print_warning "Could not update dev sync policy"
 kubectl patch application devops-pipeline-staging -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":false}}}}' 2>/dev/null || print_warning "Could not update staging sync policy"
+kubectl patch application devops-pipeline-prod -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":false}}}}' 2>/dev/null || print_warning "Could not update prod sync policy"
 
-# Force sync dev environment using argocd app sync command
+# Wait for ArgoCD to process the sync policies
+sleep 5
+
+# Force sync dev environment by triggering a refresh and sync
 print_status "Force syncing dev environment..."
-kubectl patch application devops-pipeline-dev -n argocd --type json --patch '[{"op": "replace", "path": "/operation", "value": {"sync": {"syncStrategy": {"hook": {}, "apply": {}}}}}]' 2>/dev/null || print_warning "Could not trigger sync operation"
 
-# Wait a bit for sync to start
-sleep 10
+# Method 1: Trigger refresh annotation (triggers ArgoCD to refresh and sync)
+kubectl patch application devops-pipeline-dev -n argocd --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' 2>/dev/null || true
+
+# Method 2: If automated sync is enabled, just wait. Otherwise trigger manual sync
+sleep 5
+
+# Check if automated sync is working
+SYNC_STATUS=$(kubectl get application devops-pipeline-dev -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "")
+if [ -z "$SYNC_STATUS" ] || [ "$SYNC_STATUS" != "Synced" ]; then
+    print_status "Triggering manual sync operation..."
+    # Use the operation field to trigger sync
+    kubectl patch application devops-pipeline-dev -n argocd --type json -p='[{"op": "add", "path": "/operation", "value": {"initiatedBy": {"username": "admin"}, "sync": {"revision": "HEAD"}}}]' 2>/dev/null || \
+    kubectl patch application devops-pipeline-dev -n argocd --type merge -p '{"operation":{"initiatedBy":{"username":"admin"},"sync":{"revision":"HEAD"}}}' 2>/dev/null || \
+    print_warning "Could not trigger sync operation directly"
+fi
+
+# Wait for ArgoCD to process the sync
+sleep 20
+
+# Check sync status
+print_status "Checking ArgoCD sync status..."
+for i in {1..30}; do
+    SYNC_STATUS=$(kubectl get application devops-pipeline-dev -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "")
+    HEALTH_STATUS=$(kubectl get application devops-pipeline-dev -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "")
+    if [ "$SYNC_STATUS" = "Synced" ] || [ "$HEALTH_STATUS" = "Healthy" ]; then
+        print_success "ArgoCD application is syncing/synced"
+        break
+    fi
+    sleep 3
+done
 
 # Wait for deployments to be ready (with retries)
 print_status "Waiting for deployments to be ready..."
@@ -163,9 +191,14 @@ for deployment in flask-app user-service product-service; do
     fi
 done
 
-# Create ingress for Flask app
+# Ensure dev namespace exists before creating ingress
+print_status "Ensuring dev namespace exists..."
+kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace dev || true
+
+# Create ingress for Flask app (only if service exists)
 print_status "Creating ingress for Flask app..."
-cat > flask-ingress.yaml << EOF
+if kubectl get svc flask-app-service -n dev &>/dev/null; then
+    cat > flask-ingress.yaml << EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -173,7 +206,9 @@ metadata:
   namespace: dev
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
+  ingressClassName: nginx
   rules:
   - host: flask-app.local
     http:
@@ -187,8 +222,11 @@ spec:
               number: 80
 EOF
 
-kubectl apply -f flask-ingress.yaml
-rm flask-ingress.yaml
+    kubectl apply -f flask-ingress.yaml 2>/dev/null || print_warning "Could not create ingress (service may not be ready yet)"
+    rm -f flask-ingress.yaml
+else
+    print_warning "Flask app service not found. Ingress will be created when service is available."
+fi
 
 # Check if running as root and set SUDO prefix accordingly
 SUDO_HOSTS=""
