@@ -106,10 +106,14 @@ check_argocd() {
     
     # Check ArgoCD server
     if kubectl get deployment argocd-server -n argocd &> /dev/null; then
-        local replicas=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "ArgoCD server is running (${replicas}/${desired})"
         else
             print_error "ArgoCD server is not ready (${replicas}/${desired})"
@@ -143,10 +147,14 @@ check_gitea() {
     print_status "Checking Gitea..."
     
     if kubectl get deployment gitea -n gitea &> /dev/null; then
-        local replicas=$(kubectl get deployment gitea -n gitea -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment gitea -n gitea -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment gitea -n gitea -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment gitea -n gitea -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "Gitea is running (${replicas}/${desired})"
         else
             print_error "Gitea is not ready (${replicas}/${desired})"
@@ -163,10 +171,14 @@ check_minio() {
     print_status "Checking MinIO..."
     
     if kubectl get deployment minio -n minio &> /dev/null; then
-        local replicas=$(kubectl get deployment minio -n minio -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment minio -n minio -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment minio -n minio -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment minio -n minio -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "MinIO is running (${replicas}/${desired})"
         else
             print_error "MinIO is not ready (${replicas}/${desired})"
@@ -183,10 +195,14 @@ check_trivy() {
     print_status "Checking Trivy Operator..."
     
     if kubectl get deployment trivy-operator -n trivy-system &> /dev/null; then
-        local replicas=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment trivy-operator -n trivy-system -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "Trivy Operator is running (${replicas}/${desired})"
         else
             print_error "Trivy Operator is not ready (${replicas}/${desired})"
@@ -207,10 +223,14 @@ check_velero() {
     print_status "Checking Velero..."
     
     if kubectl get deployment velero -n velero &> /dev/null; then
-        local replicas=$(kubectl get deployment velero -n velero -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment velero -n velero -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment velero -n velero -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment velero -n velero -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "Velero is running (${replicas}/${desired})"
         else
             print_error "Velero is not ready (${replicas}/${desired})"
@@ -238,10 +258,14 @@ check_applications() {
     for app in "${apps[@]}"; do
         # Check in dev namespace
         if kubectl get deployment ${app} -n dev &> /dev/null; then
-            local replicas=$(kubectl get deployment ${app} -n dev -o jsonpath='{.status.readyReplicas}')
-            local desired=$(kubectl get deployment ${app} -n dev -o jsonpath='{.spec.replicas}')
+            local replicas=$(kubectl get deployment ${app} -n dev -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            local desired=$(kubectl get deployment ${app} -n dev -o jsonpath='{.spec.replicas}' 2>/dev/null)
             
-            if [ "$replicas" -eq "$desired" ]; then
+            # Default to 0 if empty
+            replicas=${replicas:-0}
+            desired=${desired:-0}
+            
+            if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
                 print_success "${app} is running in dev (${replicas}/${desired})"
             else
                 print_warning "${app} is not ready in dev (${replicas}/${desired})"
@@ -258,10 +282,14 @@ check_ingress() {
     
     # Check NGINX ingress controller
     if kubectl get deployment ingress-nginx-controller -n ingress-nginx &> /dev/null; then
-        local replicas=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.readyReplicas}')
-        local desired=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.replicas}')
+        local replicas=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        local desired=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.replicas}' 2>/dev/null)
         
-        if [ "$replicas" -eq "$desired" ]; then
+        # Default to 0 if empty
+        replicas=${replicas:-0}
+        desired=${desired:-0}
+        
+        if [ "$replicas" -eq "$desired" ] && [ "$desired" -gt 0 ]; then
             print_success "NGINX Ingress Controller is running (${replicas}/${desired})"
         else
             print_error "NGINX Ingress Controller is not ready (${replicas}/${desired})"
@@ -355,145 +383,6 @@ generate_health_report() {
     print_success "Health report generated: ${report_file}"
 }
 
-# Function to test service access
-test_service_access() {
-    print_status "Testing service access..."
-    
-    # Test Flask App
-    print_status "Testing Flask App (port 30080)..."
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost:30080 2>/dev/null | grep -q "200\|302\|301"; then
-        print_success "Flask App is accessible"
-    else
-        print_warning "Flask App is NOT accessible (may need time to start)"
-    fi
-    
-    # Test User Service
-    print_status "Testing User Service (port 30081)..."
-    if curl -s http://localhost:30081/api/health 2>/dev/null | grep -q "healthy\|status"; then
-        print_success "User Service is accessible"
-    else
-        print_warning "User Service is NOT accessible (may need time to start)"
-    fi
-    
-    # Test Product Service
-    print_status "Testing Product Service (port 30082)..."
-    if curl -s http://localhost:30082/api/health 2>/dev/null | grep -q "healthy\|status"; then
-        print_success "Product Service is accessible"
-    else
-        print_warning "Product Service is NOT accessible (may need time to start)"
-    fi
-    
-    # Test ArgoCD
-    print_status "Testing ArgoCD (port 30083)..."
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost:30083 2>/dev/null | grep -q "200\|302\|301\|307"; then
-        print_success "ArgoCD is accessible"
-    else
-        print_warning "ArgoCD is NOT accessible"
-    fi
-    
-    # Test Gitea
-    print_status "Testing Gitea (port 30084)..."
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost:30084 2>/dev/null | grep -q "200\|302\|301"; then
-        print_success "Gitea is accessible"
-    else
-        print_warning "Gitea is NOT accessible"
-    fi
-    
-    # Test MinIO
-    print_status "Testing MinIO (port 30085)..."
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost:30085 2>/dev/null | grep -q "200\|403\|302\|301"; then
-        print_success "MinIO is accessible"
-    else
-        print_warning "MinIO is NOT accessible (may not be installed)"
-    fi
-}
-
-# Function to check URL accessibility
-check_url_status() {
-    local name=$1
-    local url=$2
-    
-    printf "%-20s %s ... " "$name" "$url"
-    
-    response=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null)
-    
-    if [ "$response" = "200" ] || [ "$response" = "302" ] || [ "$response" = "307" ]; then
-        print_success "OK (HTTP $response)"
-        return 0
-    elif [ "$response" = "403" ]; then
-        print_success "OK - Needs Auth (HTTP $response)"
-        return 0
-    elif [ -z "$response" ] || [ "$response" = "000" ]; then
-        print_error "UNREACHABLE"
-        return 1
-    else
-        print_warning "HTTP $response"
-        return 1
-    fi
-}
-
-# Function to show access URLs and test them
-show_access_urls() {
-    # Get public IP
-    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
-    if [ -z "$PUBLIC_IP" ]; then
-        PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)
-    fi
-    if [ -z "$PUBLIC_IP" ]; then
-        PUBLIC_IP=$(hostname -I | awk '{print $1}')
-    fi
-    if [ -z "$PUBLIC_IP" ]; then
-        PUBLIC_IP="localhost"
-        print_warning "Could not detect public IP, using localhost"
-    fi
-    
-    echo ""
-    echo "=========================================="
-    echo "🌐 APPLICATION URLs & STATUS"
-    echo "=========================================="
-    echo ""
-    
-    # Check all services
-    check_url_status "Flask App" "http://${PUBLIC_IP}:30080"
-    check_url_status "User Service" "http://${PUBLIC_IP}:30081/api/users"
-    check_url_status "Product Service" "http://${PUBLIC_IP}:30082/api/products"
-    check_url_status "ArgoCD" "http://${PUBLIC_IP}:30083"
-    check_url_status "Gitea" "http://${PUBLIC_IP}:30084"
-    check_url_status "MinIO" "http://${PUBLIC_IP}:30085"
-    check_url_status "Docker Registry" "http://${PUBLIC_IP}:30500/v2/"
-    
-    echo ""
-    echo "=========================================="
-    echo "🔐 CREDENTIALS"
-    echo "=========================================="
-    echo ""
-    echo "Gitea:  admin / admin123"
-    echo "MinIO:  minioadmin / minioadmin123"
-    echo ""
-    echo "ArgoCD Password:"
-    ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
-    if [ -n "$ARGOCD_PASSWORD" ]; then
-        echo "  Username: admin"
-        echo "  Password: $ARGOCD_PASSWORD"
-    else
-        echo "  Run: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d"
-    fi
-    echo ""
-    echo "=========================================="
-    echo "⚠️  AWS Security Group Configuration"
-    echo "=========================================="
-    echo ""
-    echo "If services show UNREACHABLE, open these ports:"
-    echo ""
-    echo "1. Go to: AWS Console → EC2 → Security Groups"
-    echo "2. Select your instance's security group"
-    echo "3. Edit Inbound Rules → Add these Custom TCP rules:"
-    echo "   - Port Range: 30080-30085, 30500"
-    echo "   - Source: 0.0.0.0/0"
-    echo "4. Save rules and wait 30 seconds"
-    echo ""
-}
-
 # Main function
 main() {
     print_status "Starting comprehensive health check..."
@@ -515,35 +404,29 @@ main() {
     # Check namespaces
     print_status "Checking namespaces..."
     for namespace in "${NAMESPACES[@]}"; do
-        check_namespace ${namespace} || true
+        check_namespace ${namespace} || exit_code=1
     done
     
     # Check components
-    check_argocd || true
-    check_gitea || true
-    check_minio || true
-    check_trivy || true
-    check_velero || true
-    check_applications || true
-    check_ingress || true
-    check_services || true
-    
-    # Test service access
-    test_service_access
+    check_argocd || exit_code=1
+    check_gitea || exit_code=1
+    check_minio || exit_code=1
+    check_trivy || exit_code=1
+    check_velero || exit_code=1
+    check_applications || exit_code=1
+    check_ingress || exit_code=1
+    check_services || exit_code=1
     
     # Generate health report
     generate_health_report
     
-    # Show access URLs
-    show_access_urls
-    
     if [ $exit_code -eq 0 ]; then
-        print_success "Health check completed! 🎉"
+        print_success "All health checks passed! 🎉"
     else
-        print_warning "Health check completed with some warnings."
+        print_error "Some health checks failed. Please review the output above."
     fi
     
-    return 0
+    return $exit_code
 }
 
 # Run main function

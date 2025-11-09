@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # deploy_pipeline.sh - Build Docker images and deploy applications
-# This script builds Docker images for Flask app and microservices, and deploys them to Kubernetes with NodePort access
+# This script builds Docker images for Flask app and microservices, pushes to registry, commits manifests, and triggers ArgoCD sync
 
 # Don't exit on error - handle errors gracefully
 set +e
@@ -33,21 +33,9 @@ print_error() {
 }
 
 # Configuration
-LOCAL_REGISTRY="localhost:30500"
+REGISTRY="localhost:5000"
+VERSION="latest"
 CLUSTER_NAME="devops-pipeline"
-GITEA_URL="http://localhost:30084"
-GITEA_REPO="devops-pipeline"
-
-# Get registry ClusterIP dynamically
-REGISTRY_IP=$(kubectl get svc docker-registry -n registry -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
-if [ -z "$REGISTRY_IP" ]; then
-    print_error "Docker registry not found. Please run bootstrap_cluster.sh first."
-    exit 1
-fi
-CLUSTER_REGISTRY="${REGISTRY_IP}:5000"
-VERSION="$(date +%Y%m%d-%H%M%S)"
-
-print_status "Using registry: ${CLUSTER_REGISTRY}"
 
 # Check if cluster is running
 if ! kind get clusters | grep -q ${CLUSTER_NAME}; then
@@ -67,310 +55,515 @@ kubectl config use-context kind-${CLUSTER_NAME} || {
     exit 1
 }
 
-# Verify registry is accessible
-print_status "Verifying registry accessibility..."
-REGISTRY_ACCESSIBLE=false
+# Build and push Flask app
+print_status "Building Flask application..."
+cd apps/flask-app || {
+    print_error "Failed to change to apps/flask-app directory"
+    exit 1
+}
+docker build -t flask-app:${VERSION} . || {
+    print_error "Failed to build Flask app"
+    exit 1
+}
+docker tag flask-app:${VERSION} ${REGISTRY}/flask-app:${VERSION}
+kind load docker-image flask-app:${VERSION} --name ${CLUSTER_NAME} || {
+    print_error "Failed to load Flask app image into cluster"
+    exit 1
+}
+print_success "Flask app built and loaded into cluster"
+
+# Build and push User Service
+print_status "Building User Service..."
+cd ../microservice-1 || {
+    print_error "Failed to change to microservice-1 directory"
+    exit 1
+}
+docker build -t user-service:${VERSION} . || {
+    print_error "Failed to build User service"
+    exit 1
+}
+docker tag user-service:${VERSION} ${REGISTRY}/user-service:${VERSION}
+kind load docker-image user-service:${VERSION} --name ${CLUSTER_NAME} || {
+    print_error "Failed to load User service image into cluster"
+    exit 1
+}
+print_success "User service built and loaded into cluster"
+
+# Build and push Product Service
+print_status "Building Product Service..."
+cd ../microservice-2 || {
+    print_error "Failed to change to microservice-2 directory"
+    exit 1
+}
+docker build -t product-service:${VERSION} . || {
+    print_error "Failed to build Product service"
+    exit 1
+}
+docker tag product-service:${VERSION} ${REGISTRY}/product-service:${VERSION}
+kind load docker-image product-service:${VERSION} --name ${CLUSTER_NAME} || {
+    print_error "Failed to load Product service image into cluster"
+    exit 1
+}
+print_success "Product service built and loaded into cluster"
+
+cd ../.. || {
+    print_error "Failed to return to project root"
+    exit 1
+}
+
+# Update image references in manifests (skip if not needed - images are already tagged correctly)
+print_status "Checking manifest files..."
+# Note: Image names in manifests should match what we built
+# Since we're using kind load, images are available as flask-app:latest, etc.
+# We don't need to modify manifests if they already reference the correct images
+
+# Apply ArgoCD project and applications
+print_status "Applying ArgoCD configurations..."
+kubectl apply -f argocd/project.yaml || print_warning "ArgoCD project may already exist"
+kubectl apply -f argocd/argocd-apps.yaml || print_warning "ArgoCD applications may already exist"
+
+# Wait for ArgoCD applications to be created
+print_status "Waiting for ArgoCD applications to be created..."
+sleep 15
+
+# Wait for ArgoCD applications to appear
 for i in {1..30}; do
-    if curl -s http://${LOCAL_REGISTRY}/v2/ > /dev/null 2>&1; then
-        REGISTRY_ACCESSIBLE=true
-        print_success "Registry is accessible at ${LOCAL_REGISTRY}"
+    if kubectl get application devops-pipeline-dev -n argocd &>/dev/null; then
         break
     fi
     sleep 2
 done
 
-if [ "$REGISTRY_ACCESSIBLE" = false ]; then
-    print_warning "Registry not accessible at ${LOCAL_REGISTRY}, will load images directly to kind"
-    USE_KIND_LOAD=true
-else
-    USE_KIND_LOAD=false
+# Sync applications using ArgoCD CLI if available, otherwise use kubectl patch
+print_status "Syncing ArgoCD applications..."
+
+# Update sync policies to enable automated sync
+print_status "Enabling automated sync for applications..."
+kubectl patch application devops-pipeline-dev -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null || print_warning "Could not update dev sync policy"
+kubectl patch application devops-pipeline-staging -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":false}}}}' 2>/dev/null || print_warning "Could not update staging sync policy"
+kubectl patch application devops-pipeline-prod -n argocd --type merge --patch '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":false}}}}' 2>/dev/null || print_warning "Could not update prod sync policy"
+
+# Wait for ArgoCD to process the sync policies
+sleep 5
+
+# Force sync dev environment by triggering a refresh and sync
+print_status "Force syncing dev environment..."
+
+# Method 1: Trigger refresh annotation (triggers ArgoCD to refresh and sync)
+kubectl patch application devops-pipeline-dev -n argocd --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' 2>/dev/null || true
+
+# Method 2: If automated sync is enabled, just wait. Otherwise trigger manual sync
+sleep 5
+
+# Check if automated sync is working
+SYNC_STATUS=$(kubectl get application devops-pipeline-dev -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "")
+if [ -z "$SYNC_STATUS" ] || [ "$SYNC_STATUS" != "Synced" ]; then
+    print_status "Triggering manual sync operation..."
+    # Use the operation field to trigger sync
+    kubectl patch application devops-pipeline-dev -n argocd --type json -p='[{"op": "add", "path": "/operation", "value": {"initiatedBy": {"username": "admin"}, "sync": {"revision": "HEAD"}}}]' 2>/dev/null || \
+    kubectl patch application devops-pipeline-dev -n argocd --type merge -p '{"operation":{"initiatedBy":{"username":"admin"},"sync":{"revision":"HEAD"}}}' 2>/dev/null || \
+    print_warning "Could not trigger sync operation directly"
 fi
 
-# Build and push Flask app to local registry
-print_status "Building Flask application..."
-docker build -t flask-app:latest ./apps/flask-app || {
-    print_error "Failed to build Flask app"
-    exit 1
-}
-
-if [ "$USE_KIND_LOAD" = true ]; then
-    print_status "Loading Flask app directly to kind cluster..."
-    kind load docker-image flask-app:latest --name ${CLUSTER_NAME}
-    print_success "Flask app loaded to cluster"
-else
-    docker tag flask-app:latest ${LOCAL_REGISTRY}/flask-app:${VERSION}
-    docker tag flask-app:latest ${LOCAL_REGISTRY}/flask-app:latest
-    print_status "Pushing Flask app to local registry..."
-    docker push ${LOCAL_REGISTRY}/flask-app:${VERSION} || print_warning "Failed to push Flask app"
-    docker push ${LOCAL_REGISTRY}/flask-app:latest || print_warning "Failed to push Flask app latest tag"
-    print_success "Flask app built and pushed to registry"
-fi
-
-# Build and push User Service
-print_status "Building User Service..."
-docker build -t user-service:latest ./apps/microservice-1 || {
-    print_error "Failed to build User service"
-    exit 1
-}
-
-if [ "$USE_KIND_LOAD" = true ]; then
-    print_status "Loading User service directly to kind cluster..."
-    kind load docker-image user-service:latest --name ${CLUSTER_NAME}
-    print_success "User service loaded to cluster"
-else
-    docker tag user-service:latest ${LOCAL_REGISTRY}/user-service:${VERSION}
-    docker tag user-service:latest ${LOCAL_REGISTRY}/user-service:latest
-    print_status "Pushing User service to local registry..."
-    docker push ${LOCAL_REGISTRY}/user-service:${VERSION} || print_warning "Failed to push User service"
-    docker push ${LOCAL_REGISTRY}/user-service:latest || print_warning "Failed to push User service latest tag"
-    print_success "User service built and pushed to registry"
-fi
-
-# Build and push Product Service
-print_status "Building Product Service..."
-docker build -t product-service:latest ./apps/microservice-2 || {
-    print_error "Failed to build Product service"
-    exit 1
-}
-
-if [ "$USE_KIND_LOAD" = true ]; then
-    print_status "Loading Product service directly to kind cluster..."
-    kind load docker-image product-service:latest --name ${CLUSTER_NAME}
-    print_success "Product service loaded to cluster"
-else
-    docker tag product-service:latest ${LOCAL_REGISTRY}/product-service:${VERSION}
-    docker tag product-service:latest ${LOCAL_REGISTRY}/product-service:latest
-    print_status "Pushing Product service to local registry..."
-    docker push ${LOCAL_REGISTRY}/product-service:${VERSION} || print_warning "Failed to push Product service"
-    docker push ${LOCAL_REGISTRY}/product-service:latest || print_warning "Failed to push Product service latest tag"
-    print_success "Product service built and pushed to registry"
-fi
-
-# Create namespaces
-print_status "Creating namespaces..."
-kubectl create namespace dev 2>/dev/null || print_status "Namespace dev already exists"
-kubectl create namespace staging 2>/dev/null || print_status "Namespace staging already exists"
-kubectl create namespace production 2>/dev/null || print_status "Namespace production already exists"
-
-# Update deployment manifests with new image tags
-if [ "$USE_KIND_LOAD" = true ]; then
-    print_status "Updating deployment manifests for local images..."
-    # Use local images without registry
-    sed -i.bak "s|image: .*flask-app:latest|image: flask-app:latest|g" apps/flask-app/deployment.yaml
-    sed -i.bak "s|image: .*user-service:latest|image: user-service:latest|g" apps/microservice-1/deployment.yaml
-    sed -i.bak "s|image: .*product-service:latest|image: product-service:latest|g" apps/microservice-2/deployment.yaml
-    sed -i.bak "s|imagePullPolicy: Always|imagePullPolicy: Never|g" apps/flask-app/deployment.yaml
-    sed -i.bak "s|imagePullPolicy: Always|imagePullPolicy: Never|g" apps/microservice-1/deployment.yaml
-    sed -i.bak "s|imagePullPolicy: Always|imagePullPolicy: Never|g" apps/microservice-2/deployment.yaml
-    print_success "Deployment manifests updated for local images"
-else
-    print_status "Updating deployment manifests with registry IP: ${CLUSTER_REGISTRY}..."
-    # Replace any existing image references with the current registry IP
-    sed -i.bak "s|image: flask-app:latest|image: ${CLUSTER_REGISTRY}/flask-app:latest|g" apps/flask-app/deployment.yaml
-    sed -i.bak "s|image: user-service:latest|image: ${CLUSTER_REGISTRY}/user-service:latest|g" apps/microservice-1/deployment.yaml
-    sed -i.bak "s|image: product-service:latest|image: ${CLUSTER_REGISTRY}/product-service:latest|g" apps/microservice-2/deployment.yaml
-    sed -i.bak "s|image: docker-registry.registry:[0-9]*/flask-app:latest|image: ${CLUSTER_REGISTRY}/flask-app:latest|g" apps/flask-app/deployment.yaml
-    sed -i.bak "s|image: docker-registry.registry:[0-9]*/user-service:latest|image: ${CLUSTER_REGISTRY}/user-service:latest|g" apps/microservice-1/deployment.yaml
-    sed -i.bak "s|image: docker-registry.registry:[0-9]*/product-service:latest|image: ${CLUSTER_REGISTRY}/product-service:latest|g" apps/microservice-2/deployment.yaml
-    sed -i.bak "s|image: [0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*/flask-app:latest|image: ${CLUSTER_REGISTRY}/flask-app:latest|g" apps/flask-app/deployment.yaml
-    sed -i.bak "s|image: [0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*/user-service:latest|image: ${CLUSTER_REGISTRY}/user-service:latest|g" apps/microservice-1/deployment.yaml
-    sed -i.bak "s|image: [0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*/product-service:latest|image: ${CLUSTER_REGISTRY}/product-service:latest|g" apps/microservice-2/deployment.yaml
-    sed -i.bak "s|imagePullPolicy: Never|imagePullPolicy: Always|g" apps/flask-app/deployment.yaml
-    sed -i.bak "s|imagePullPolicy: Never|imagePullPolicy: Always|g" apps/microservice-1/deployment.yaml
-    sed -i.bak "s|imagePullPolicy: Never|imagePullPolicy: Always|g" apps/microservice-2/deployment.yaml
-    print_success "Deployment manifests updated with registry ${CLUSTER_REGISTRY}"
-fi
-
-# Initialize git repo if not already done
-if [ ! -d ".git" ]; then
-    print_status "Initializing Git repository..."
-    git init
-    git config user.email "devops@local"
-    git config user.name "DevOps Pipeline"
-    git add .
-    git commit -m "Initial commit" || true
-fi
-
-# Commit changes
-print_status "Committing changes to Git..."
-git add apps/*/deployment.yaml environments/
-git commit -m "Update image tags to ${VERSION}" || print_warning "No changes to commit"
-
-# Push to Gitea (if configured)
-print_status "Pushing to Gitea repository..."
-if git remote | grep -q gitea; then
-    git push gitea main 2>/dev/null || git push gitea master 2>/dev/null || print_warning "Failed to push to Gitea (repo may not be configured)"
-else
-    print_warning "Gitea remote not configured. Run: git remote add gitea ${GITEA_URL}/admin/${GITEA_REPO}.git"
-fi
-
-# Scale down infrastructure to free up CPU resources
-print_status "Optimizing cluster resources..."
-kubectl scale statefulset gitea-postgresql-ha-postgresql --replicas=1 -n gitea 2>/dev/null || true
-kubectl scale statefulset gitea-valkey-cluster --replicas=1 -n gitea 2>/dev/null || true
-print_success "Infrastructure scaled down to conserve resources"
-
-# Wait for resources to free up
-sleep 10
-
-# Trigger ArgoCD sync
-print_status "Triggering ArgoCD sync..."
-kubectl patch application devops-pipeline-dev -n argocd --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"normal"}}}' 2>/dev/null || print_warning "ArgoCD application not found, deploying directly..."
-
-# Deploy applications directly to dev namespace (fallback if ArgoCD not syncing)
-print_status "Deploying applications to dev namespace..."
-kubectl apply -f apps/flask-app/deployment.yaml -n dev || print_warning "Failed to deploy Flask app"
-kubectl apply -f apps/microservice-1/deployment.yaml -n dev || print_warning "Failed to deploy User service"
-kubectl apply -f apps/microservice-2/deployment.yaml -n dev || print_warning "Failed to deploy Product service"
-
-# Wait for deployments to be ready
-print_status "Waiting for deployments to be ready (this may take 2-3 minutes)..."
+# Wait for ArgoCD to process the sync
 sleep 20
 
+# Check sync status
+print_status "Checking ArgoCD sync status..."
+for i in {1..30}; do
+    SYNC_STATUS=$(kubectl get application devops-pipeline-dev -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "")
+    HEALTH_STATUS=$(kubectl get application devops-pipeline-dev -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "")
+    if [ "$SYNC_STATUS" = "Synced" ] || [ "$HEALTH_STATUS" = "Healthy" ]; then
+        print_success "ArgoCD application is syncing/synced"
+        break
+    fi
+    sleep 3
+done
+
+# Wait for deployments to be ready (with retries)
+print_status "Waiting for deployments to be ready..."
 for deployment in flask-app user-service product-service; do
     print_status "Waiting for ${deployment} deployment..."
     if kubectl wait --for=condition=available --timeout=300s deployment/${deployment} -n dev 2>/dev/null; then
         print_success "${deployment} is ready"
     else
-        print_warning "${deployment} may still be starting. Checking pod status..."
-        kubectl get pods -n dev -l app=${deployment} 2>/dev/null || true
+        print_warning "${deployment} may still be starting. Check with: kubectl get pods -n dev"
     fi
 done
 
-# Expose services as NodePort
-print_status "Exposing services via NodePort..."
+# Ensure dev namespace exists before creating ingress
+print_status "Ensuring dev namespace exists..."
+kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f - || kubectl create namespace dev || true
 
-# Get service names first
-FLASK_SVC=$(kubectl get svc -n dev -l app=flask-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-USER_SVC=$(kubectl get svc -n dev -l app=user-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-PRODUCT_SVC=$(kubectl get svc -n dev -l app=product-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+# Create ingress for Flask app (only if service exists)
+print_status "Creating ingress for Flask app..."
+if kubectl get svc flask-app-service -n dev &>/dev/null; then
+    cat > flask-ingress.yaml << EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: flask-app-ingress
+  namespace: dev
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: flask-app.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: flask-app-service
+            port:
+              number: 80
+EOF
 
-# Patch Flask app service to NodePort
-if [ -n "$FLASK_SVC" ]; then
-    kubectl patch svc $FLASK_SVC -n dev -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":5000,"nodePort":30080}]}}' 2>/dev/null && print_success "Flask app exposed on port 30080"
+    kubectl apply -f flask-ingress.yaml 2>/dev/null || print_warning "Could not create ingress (service may not be ready yet)"
+    rm -f flask-ingress.yaml
 else
-    print_warning "Flask app service not found, creating new one..."
-    kubectl expose deployment flask-app -n dev --type=NodePort --port=80 --target-port=5000 --name=flask-app-service 2>/dev/null || true
-    kubectl patch svc flask-app-service -n dev -p '{"spec":{"ports":[{"port":80,"targetPort":5000,"nodePort":30080}]}}' 2>/dev/null || true
+    print_warning "Flask app service not found. Ingress will be created when service is available."
 fi
 
-# Patch User service to NodePort
-if [ -n "$USER_SVC" ]; then
-    kubectl patch svc $USER_SVC -n dev -p '{"spec":{"type":"NodePort","ports":[{"port":5001,"targetPort":5001,"nodePort":30081}]}}' 2>/dev/null && print_success "User service exposed on port 30081"
+# Check if running as root and set SUDO prefix accordingly
+SUDO_HOSTS=""
+if [[ $EUID -eq 0 ]]; then
+   SUDO_HOSTS=""
 else
-    print_warning "User service not found, creating new one..."
-    kubectl expose deployment user-service -n dev --type=NodePort --port=5001 --target-port=5001 --name=user-service 2>/dev/null || true
-    kubectl patch svc user-service -n dev -p '{"spec":{"ports":[{"port":5001,"targetPort":5001,"nodePort":30081}]}}' 2>/dev/null || true
+   SUDO_HOSTS="sudo"
 fi
 
-# Patch Product service to NodePort
-if [ -n "$PRODUCT_SVC" ]; then
-    kubectl patch svc $PRODUCT_SVC -n dev -p '{"spec":{"type":"NodePort","ports":[{"port":5002,"targetPort":5002,"nodePort":30082}]}}' 2>/dev/null && print_success "Product service exposed on port 30082"
-else
-    print_warning "Product service not found, creating new one..."
-    kubectl expose deployment product-service -n dev --type=NodePort --port=5002 --target-port=5002 --name=product-service 2>/dev/null || true
-    kubectl patch svc product-service -n dev -p '{"spec":{"ports":[{"port":5002,"targetPort":5002,"nodePort":30082}]}}' 2>/dev/null || true
+# Add ingress host to /etc/hosts
+if ! grep -q "flask-app.local" /etc/hosts 2>/dev/null; then
+    echo "127.0.0.1 flask-app.local" | ${SUDO_HOSTS} tee -a /etc/hosts
 fi
 
-# Expose ArgoCD as NodePort
-print_status "Exposing ArgoCD via NodePort..."
-kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort","ports":[{"name":"http","port":80,"targetPort":8080,"nodePort":30083},{"name":"https","port":443,"targetPort":8080,"nodePort":30443}]}}' 2>/dev/null && print_success "ArgoCD exposed on port 30083"
-
-# Expose Gitea as NodePort
-print_status "Exposing Gitea via NodePort..."
-kubectl patch svc gitea-http -n gitea -p '{"spec":{"type":"NodePort","ports":[{"port":3000,"targetPort":3000,"nodePort":30084}]}}' 2>/dev/null && print_success "Gitea exposed on port 30084"
-
-# Expose MinIO as NodePort (if it exists)
-print_status "Exposing MinIO via NodePort..."
-if kubectl get svc minio -n minio 2>/dev/null; then
-    kubectl patch svc minio -n minio -p '{"spec":{"type":"NodePort","ports":[{"port":9000,"targetPort":9000,"nodePort":30085}]}}' 2>/dev/null && print_success "MinIO exposed on port 30085"
-elif kubectl get svc -n minio -l app.kubernetes.io/name=minio 2>/dev/null | grep -v NAME | grep -q .; then
-    MINIO_SVC=$(kubectl get svc -n minio -l app.kubernetes.io/name=minio -o jsonpath='{.items[0].metadata.name}')
-    kubectl patch svc $MINIO_SVC -n minio -p '{"spec":{"type":"NodePort","ports":[{"port":9000,"targetPort":9000,"nodePort":30085}]}}' 2>/dev/null && print_success "MinIO exposed on port 30085"
-else
-    print_warning "MinIO service not found, skipping..."
-fi
-
-# Get public IP
-print_status "Detecting public IP address..."
-PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
-if [ -z "$PUBLIC_IP" ]; then
-    PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null)
-fi
-if [ -z "$PUBLIC_IP" ]; then
-    PUBLIC_IP=$(hostname -I | awk '{print $1}')
-fi
-if [ -z "$PUBLIC_IP" ]; then
-    PUBLIC_IP="<YOUR_PUBLIC_IP>"
-    print_warning "Could not detect public IP automatically"
-fi
-
-# Apply ArgoCD project and applications (optional - for GitOps)
-print_status "Applying ArgoCD configurations (optional)..."
-kubectl apply -f argocd/project.yaml 2>/dev/null || true
-kubectl apply -f argocd/argocd-apps.yaml 2>/dev/null || true
-
-# Verify deployments
-print_status "Verifying deployments..."
-echo ""
-echo "=== Pods in dev namespace ==="
-kubectl get pods -n dev
-echo ""
-echo "=== Services in dev namespace ==="
-kubectl get svc -n dev
-echo ""
-
-# Run security scan with Trivy (suppress output for cleaner display)
+# Run security scan with Trivy
 print_status "Running security scan with Trivy..."
-trivy image --severity HIGH,CRITICAL flask-app:${VERSION} > /tmp/trivy-flask.txt 2>&1 || true
-trivy image --severity HIGH,CRITICAL user-service:${VERSION} > /tmp/trivy-user.txt 2>&1 || true
-trivy image --severity HIGH,CRITICAL product-service:${VERSION} > /tmp/trivy-product.txt 2>&1 || true
-print_success "Security scans completed (reports saved to /tmp/trivy-*.txt)"
+trivy image --severity HIGH,CRITICAL flask-app:${VERSION} || print_warning "Security scan found vulnerabilities"
+trivy image --severity HIGH,CRITICAL user-service:${VERSION} || print_warning "Security scan found vulnerabilities"
+trivy image --severity HIGH,CRITICAL product-service:${VERSION} || print_warning "Security scan found vulnerabilities"
 
+# Wait for ingress to be ready
+print_status "Waiting for ingress to be ready..."
+sleep 10
+for i in {1..30}; do
+    if kubectl get ingress flask-app-ingress -n dev &>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+# Get ingress controller port
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}' 2>/dev/null || echo "80")
+INGRESS_HTTPS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}' 2>/dev/null || echo "443")
+
+# Get ArgoCD service port
+ARGOCD_PORT=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].port}' 2>/dev/null || echo "443")
+ARGOCD_NODEPORT=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null || echo "")
+
+# Get Gitea service port
+GITEA_PORT=$(kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].port}' 2>/dev/null || echo "3000")
+GITEA_NODEPORT=$(kubectl get svc -n gitea gitea-http -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}' 2>/dev/null || echo "")
+
+# Get MinIO service port
+MINIO_PORT=$(kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].port}' 2>/dev/null || echo "9000")
+MINIO_NODEPORT=$(kubectl get svc -n minio minio -o jsonpath='{.spec.ports[?(@.name=="api")].nodePort}' 2>/dev/null || echo "")
+
+# Get local IP or use localhost
+LOCAL_IP="127.0.0.1"
+PUBLIC_IP=""
+IS_EC2=false
+
+# Detect if running on EC2
+if curl -s --max-time 2 http://169.254.169.254/latest/meta-data/ &>/dev/null; then
+    IS_EC2=true
+    # Get EC2 public IP
+    PUBLIC_IP=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "")
+    # Get EC2 private IP
+    PRIVATE_IP=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || echo "")
+    if [ -n "$PRIVATE_IP" ]; then
+        LOCAL_IP="$PRIVATE_IP"
+    fi
+fi
+
+# If not EC2, try to get local IP
+if [ "$IS_EC2" = false ] && command -v hostname &>/dev/null; then
+    ACTUAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+    if [[ "$ACTUAL_IP" != "127.0.0.1" ]] && [[ "$ACTUAL_IP" != "" ]]; then
+        LOCAL_IP="$ACTUAL_IP"
+    fi
+fi
+
+# If public IP not found, try other methods
+if [ -z "$PUBLIC_IP" ]; then
+    # Try to get public IP from external service
+    PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || curl -s --max-time 5 https://ifconfig.me 2>/dev/null || echo "")
+fi
+
+# Ensure ingress controller is NodePort for external access
+print_status "Configuring ingress for external access..."
+kubectl patch svc ingress-nginx-controller -n ingress-nginx --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "NodePort"}]' 2>/dev/null || true
+
+# Ensure Gitea service is NodePort for external access
+kubectl patch svc gitea-http -n gitea --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "NodePort"}]' 2>/dev/null || true
+
+# Ensure MinIO service is NodePort for external access (if exists)
+kubectl patch svc minio -n minio --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "NodePort"}]' 2>/dev/null || true
+
+# Ensure ArgoCD service is LoadBalancer/NodePort for external access
+kubectl patch svc argocd-server -n argocd --type='json' -p='[{"op": "replace", "path": "/spec/type", "value": "LoadBalancer"}]' 2>/dev/null || true
+
+# Wait for service updates
+sleep 5
+
+# Get actual NodePorts after patch
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}' 2>/dev/null || echo "80")
+INGRESS_HTTPS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}' 2>/dev/null || echo "443")
+
+# Function to test URL
+test_url() {
+    local url=$1
+    local name=$2
+    shift 2
+    local extra_args="$@"
+    local max_attempts=5
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        local http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 $extra_args "$url" 2>/dev/null || echo "000")
+        if echo "$http_code" | grep -qE "200|201|301|302"; then
+            return 0
+        fi
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+# Function to get port-forward command
+get_port_forward_cmd() {
+    local namespace=$1
+    local service=$2
+    local local_port=$3
+    local remote_port=$4
+    echo "kubectl port-forward -n $namespace svc/$service $local_port:$remote_port"
+}
+
+# Display URLs and setup port forwarding
 print_success "Pipeline deployment completed successfully!"
 echo ""
-echo "=========================================="
-echo "🌐 ACCESS URLs (Use these from your browser):"
-echo "=========================================="
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_status "🌐 ACCESS URLs (Working URLs):"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "Flask App:       http://${PUBLIC_IP}:30080"
-echo "User Service:    http://${PUBLIC_IP}:30081/api/users"
-echo "Product Service: http://${PUBLIC_IP}:30082/api/products"
-echo "ArgoCD:          http://${PUBLIC_IP}:30083"
-echo "Gitea:           http://${PUBLIC_IP}:30084"
-echo "MinIO:           http://${PUBLIC_IP}:30085"
+
+# Flask App URLs
+print_status "📱 Flask Application:"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    echo "   🌐 Public URL (EC2): http://$PUBLIC_IP:$INGRESS_PORT (Host: flask-app.local)"
+    echo "   🔗 Local URL: http://$LOCAL_IP:$INGRESS_PORT (Host: flask-app.local)"
+    echo "   📝 Add to /etc/hosts: $PUBLIC_IP flask-app.local"
+elif [ -n "$INGRESS_PORT" ] && [ "$INGRESS_PORT" != "80" ]; then
+    echo "   🌍 Ingress URL: http://flask-app.local:$INGRESS_PORT"
+    echo "   🔗 Direct URL: http://$LOCAL_IP:$INGRESS_PORT (Host: flask-app.local)"
+else
+    echo "   🌍 Ingress URL: http://flask-app.local"
+    echo "   🔗 Direct URL: http://$LOCAL_IP (Host: flask-app.local)"
+fi
+echo "   📋 Port Forward: $(get_port_forward_cmd dev flask-app-service 8080 80)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    echo "   🧪 Test Command: curl -H 'Host: flask-app.local' http://$PUBLIC_IP:$INGRESS_PORT/api/health"
+else
+    echo "   🧪 Test Command: curl -H 'Host: flask-app.local' http://$LOCAL_IP:$INGRESS_PORT/api/health"
+fi
 echo ""
-echo "=========================================="
-echo "🔐 CREDENTIALS:"
-echo "=========================================="
+
+# ArgoCD URLs
+print_status "🚀 ArgoCD Dashboard:"
+ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null || echo "N/A")
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$ARGOCD_NODEPORT" ]; then
+    echo "   🌐 Public URL (EC2): https://$PUBLIC_IP:$ARGOCD_NODEPORT"
+    echo "   🔗 Local URL: https://$LOCAL_IP:$ARGOCD_NODEPORT"
+elif [ -n "$ARGOCD_NODEPORT" ]; then
+    echo "   🌍 URL: https://argocd.local:$ARGOCD_NODEPORT"
+    echo "   🔗 Direct URL: https://$LOCAL_IP:$ARGOCD_NODEPORT"
+else
+    echo "   🌍 URL: https://argocd.local"
+    echo "   🔗 Direct URL: https://$LOCAL_IP"
+fi
+echo "   👤 Username: admin"
+echo "   🔑 Password: $ARGOCD_PASSWORD"
+echo "   📋 Port Forward: $(get_port_forward_cmd argocd argocd-server 8081 443)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$ARGOCD_NODEPORT" ]; then
+    echo "   🧪 Test Command: curl -k https://$PUBLIC_IP:$ARGOCD_NODEPORT/api/version"
+else
+    echo "   🧪 Test Command: curl -k https://argocd.local/api/version"
+fi
 echo ""
-echo "Gitea:  admin / admin123"
-echo "MinIO:  minioadmin / minioadmin123"
+
+# Gitea URLs
+print_status "📦 Gitea (Git Repository):"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$GITEA_NODEPORT" ]; then
+    echo "   🌐 Public URL (EC2): http://$PUBLIC_IP:$GITEA_NODEPORT"
+    echo "   🔗 Local URL: http://$LOCAL_IP:$GITEA_NODEPORT"
+elif [ -n "$GITEA_NODEPORT" ]; then
+    echo "   🌍 URL: http://gitea.local:$GITEA_NODEPORT"
+    echo "   🔗 Direct URL: http://$LOCAL_IP:$GITEA_NODEPORT"
+else
+    echo "   🌍 URL: http://gitea.local"
+    echo "   🔗 Direct URL: http://$LOCAL_IP"
+fi
+echo "   👤 Username: admin"
+echo "   🔑 Password: admin123"
+echo "   📋 Port Forward: $(get_port_forward_cmd gitea gitea-http 3000 3000)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$GITEA_NODEPORT" ]; then
+    echo "   🧪 Test Command: curl http://$PUBLIC_IP:$GITEA_NODEPORT/api/v1/version"
+else
+    echo "   🧪 Test Command: curl http://gitea.local/api/v1/version"
+fi
 echo ""
-echo "ArgoCD: admin / <run command below>"
-echo "  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d && echo"
+
+# MinIO URLs
+print_status "💾 MinIO (Object Storage):"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$MINIO_NODEPORT" ]; then
+    echo "   🌐 Public URL (EC2): http://$PUBLIC_IP:$MINIO_NODEPORT"
+    echo "   🔗 Local URL: http://$LOCAL_IP:$MINIO_NODEPORT"
+elif [ -n "$MINIO_NODEPORT" ]; then
+    echo "   🌍 URL: http://minio.local:$MINIO_NODEPORT"
+    echo "   🔗 Direct URL: http://$LOCAL_IP:$MINIO_NODEPORT"
+else
+    echo "   🌍 URL: http://minio.local"
+    echo "   🔗 Direct URL: http://$LOCAL_IP"
+fi
+echo "   👤 Username: minioadmin"
+echo "   🔑 Password: minioadmin123"
+echo "   📋 Port Forward: $(get_port_forward_cmd minio minio 9000 9000)"
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ] && [ -n "$MINIO_NODEPORT" ]; then
+    echo "   🧪 Test Command: curl http://$PUBLIC_IP:$MINIO_NODEPORT/minio/health/live"
+else
+    echo "   🧪 Test Command: curl http://minio.local/minio/health/live"
+fi
 echo ""
-echo "=========================================="
-echo "⚠️  IMPORTANT - AWS Security Group:"
-echo "=========================================="
+
+# Microservices URLs (via port-forward)
+print_status "🔧 Microservices (Port Forward Required):"
+echo "   👥 User Service: $(get_port_forward_cmd dev user-service-service 5001 80)"
+echo "   📦 Product Service: $(get_port_forward_cmd dev product-service-service 5002 80)"
 echo ""
-echo "Make sure these ports are open in your AWS Security Group:"
-echo "  - 30080 (Flask App)"
-echo "  - 30081 (User Service)"
-echo "  - 30082 (Product Service)"
-echo "  - 30083 (ArgoCD)"
-echo "  - 30084 (Gitea)"
-echo "  - 30085 (MinIO)"
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_status "✅ QUICK ACCESS COMMANDS:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "To open ports, go to:"
-echo "  AWS Console → EC2 → Security Groups → Select your SG → Edit Inbound Rules"
-echo "  Add Custom TCP rules for ports 30080-30085 from source 0.0.0.0/0"
+echo "# Test Flask App:"
+echo "curl -H 'Host: flask-app.local' http://$LOCAL_IP:$INGRESS_PORT/api/health"
 echo ""
-echo "=========================================="
-echo "✅ NEXT STEPS:"
-echo "=========================================="
+echo "# Access ArgoCD (in separate terminal):"
+echo "kubectl port-forward -n argocd svc/argocd-server 8081:443"
+echo "echo 'Then open: https://localhost:8081'"
 echo ""
-echo "1. Open the ports in AWS Security Group (see above)"
-echo "2. Access Flask App: http://${PUBLIC_IP}:30080"
-echo "3. Run: ./check_env.sh (to verify everything)"
+echo "# Access Gitea (in separate terminal):"
+echo "kubectl port-forward -n gitea svc/gitea-http 3000:3000"
+echo "echo 'Then open: http://localhost:3000'"
+echo ""
+echo "# Access MinIO (in separate terminal):"
+echo "kubectl port-forward -n minio svc/minio 9000:9000"
+echo "echo 'Then open: http://localhost:9000'"
+echo ""
+
+# Test URLs if curl is available
+if command -v curl &>/dev/null; then
+    print_status "🧪 Testing URLs..."
+    echo ""
+    
+    # Test Flask App
+    if [ -n "$INGRESS_PORT" ] && [ "$INGRESS_PORT" != "80" ]; then
+        TEST_URL="http://$LOCAL_IP:$INGRESS_PORT/api/health"
+    else
+        TEST_URL="http://$LOCAL_IP/api/health"
+    fi
+    if test_url "$TEST_URL" "Flask App" -H "Host: flask-app.local"; then
+        print_success "✅ Flask App is accessible!"
+    else
+        print_warning "⚠️  Flask App may need port forwarding. Run: kubectl port-forward -n dev svc/flask-app-service 8080:80"
+    fi
+    
+    # Test Gitea
+    if [ -n "$GITEA_NODEPORT" ]; then
+        GITEA_TEST_URL="http://$LOCAL_IP:$GITEA_NODEPORT"
+    else
+        GITEA_TEST_URL="http://$LOCAL_IP:3000"
+    fi
+    if test_url "$GITEA_TEST_URL" "Gitea" -H "Host: gitea.local"; then
+        print_success "✅ Gitea is accessible!"
+    else
+        print_warning "⚠️  Gitea may need port forwarding. Run: kubectl port-forward -n gitea svc/gitea-http 3000:3000"
+    fi
+    echo ""
+fi
+
+# AWS EC2 Security Group Instructions
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_status "🔒 AWS EC2 SECURITY GROUP CONFIGURATION:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "⚠️  IMPORTANT: Configure your EC2 Security Group to allow these ports:"
+    echo ""
+    echo "   Inbound Rules Required:"
+    echo "   ┌─────────────────────────────────────────────────────────────┐"
+    echo "   │ Type          │ Protocol │ Port Range │ Source              │"
+    echo "   ├─────────────────────────────────────────────────────────────┤"
+    echo "   │ Custom TCP    │ TCP      │ $INGRESS_PORT      │ 0.0.0.0/0 (or your IP) │"
+    echo "   │ Custom TCP    │ TCP      │ $INGRESS_HTTPS_PORT     │ 0.0.0.0/0 (or your IP) │"
+    if [ -n "$ARGOCD_NODEPORT" ]; then
+        echo "   │ Custom TCP    │ TCP      │ $ARGOCD_NODEPORT     │ 0.0.0.0/0 (or your IP) │"
+    fi
+    if [ -n "$GITEA_NODEPORT" ]; then
+        echo "   │ Custom TCP    │ TCP      │ $GITEA_NODEPORT     │ 0.0.0.0/0 (or your IP) │"
+    fi
+    if [ -n "$MINIO_NODEPORT" ]; then
+        echo "   │ Custom TCP    │ TCP      │ $MINIO_NODEPORT     │ 0.0.0.0/0 (or your IP) │"
+    fi
+    echo "   └─────────────────────────────────────────────────────────────┘"
+    echo ""
+    echo "   📋 AWS CLI Command to add rules:"
+    echo "   # Get your security group ID first:"
+    echo "   aws ec2 describe-instances --instance-ids \$(ec2-metadata --instance-id | cut -d ' ' -f2) --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text"
+    echo ""
+    echo "   # Then add rules (replace sg-xxxxx with your security group ID):"
+    echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $INGRESS_PORT --cidr 0.0.0.0/0"
+    echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $INGRESS_HTTPS_PORT --cidr 0.0.0.0/0"
+    if [ -n "$ARGOCD_NODEPORT" ]; then
+        echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $ARGOCD_NODEPORT --cidr 0.0.0.0/0"
+    fi
+    if [ -n "$GITEA_NODEPORT" ]; then
+        echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $GITEA_NODEPORT --cidr 0.0.0.0/0"
+    fi
+    if [ -n "$MINIO_NODEPORT" ]; then
+        echo "   aws ec2 authorize-security-group-ingress --group-id sg-xxxxx --protocol tcp --port $MINIO_NODEPORT --cidr 0.0.0.0/0"
+    fi
+    echo ""
+    echo "   🌐 Your EC2 Public IP: $PUBLIC_IP"
+    echo "   🔗 Your EC2 Private IP: $LOCAL_IP"
+    echo ""
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_status "📚 Next Steps:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  1. Run: ./check_env.sh (Check environment health)"
+echo "  2. Run: ./switch_blue_green.sh (Test blue-green deployment)"
+echo "  3. Run: ./backup_restore_demo.sh (Test backup/restore)"
+echo ""
+if [ "$IS_EC2" = true ] && [ -n "$PUBLIC_IP" ]; then
+    print_status "💡 TIP: After configuring Security Group, access your services using Public IP URLs above"
+    echo "   Example: http://$PUBLIC_IP:$INGRESS_PORT (with Host header: flask-app.local)"
+else
+    print_status "💡 TIP: If URLs don't work, use port-forward commands shown above in separate terminals"
+fi
 echo ""

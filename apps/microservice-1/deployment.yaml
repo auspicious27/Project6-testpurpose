@@ -6,7 +6,7 @@ metadata:
     app: user-service
     version: v1
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: user-service
@@ -18,8 +18,7 @@ spec:
     spec:
       containers:
       - name: user-service
-        image: docker-registry.registry:5000/user-service:latest
-        imagePullPolicy: Always
+        image: user-service:latest
         ports:
         - containerPort: 5001
         env:
@@ -28,6 +27,13 @@ spec:
             secretKeyRef:
               name: user-secrets
               key: secret-key
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
         livenessProbe:
           httpGet:
             path: /api/health
