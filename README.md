@@ -730,6 +730,321 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.pas
    - Source: **0.0.0.0/0** (or your IP for security)
 4. **Save rules**
 
+## 📚 Complete Commands Reference
+
+### 🚀 Main Setup Commands (Run in Order)
+
+```bash
+# Step 1: Install prerequisites
+chmod +x setup_prereqs.sh && ./setup_prereqs.sh
+
+# Step 2: Bootstrap cluster
+chmod +x bootstrap_cluster.sh && ./bootstrap_cluster.sh
+
+# Step 3: Deploy applications
+chmod +x deploy_pipeline.sh && ./deploy_pipeline.sh
+
+# Step 4: Verify deployment
+chmod +x check_env.sh && ./check_env.sh
+```
+
+### 🔄 Reset and Recreate Commands
+
+```bash
+# Complete reset and setup
+chmod +x reset_and_setup.sh && ./reset_and_setup.sh
+
+# Or manual reset
+kind delete cluster --name devops-pipeline
+docker system prune -a
+./bootstrap_cluster.sh
+```
+
+### 🔧 Fix and Troubleshooting Commands
+
+```bash
+# Fix all services
+chmod +x fix_all_services.sh && ./fix_all_services.sh
+
+# Fix Gitea specifically
+chmod +x fix_gitea_final.sh && ./fix_gitea_final.sh
+
+# Fix Flask app
+chmod +x fix_flask_app.sh && ./fix_flask_app.sh
+
+# Fix deployment issues
+chmod +x fix_deployment.sh && ./fix_deployment.sh
+
+# Fix resource constraints
+chmod +x fix_resource_constraints.sh && ./fix_resource_constraints.sh
+
+# Fix pending pods
+chmod +x fix_pending_pods.sh && ./fix_pending_pods.sh
+```
+
+### ✅ Health Check Commands
+
+```bash
+# Comprehensive health check
+chmod +x check_env.sh && ./check_env.sh
+
+# Check Gitea
+chmod +x check_gitea.sh && ./check_gitea.sh
+
+# Check URLs
+chmod +x check_urls.sh && ./check_urls.sh
+
+# Test URLs
+chmod +x test_urls.sh && ./test_urls.sh
+```
+
+### 🌐 AWS EC2 Setup Commands
+
+```bash
+# Complete AWS setup (requires aws_credentials.env)
+chmod +x complete_aws_setup.sh && ./complete_aws_setup.sh
+
+# Setup AWS credentials (first time)
+cp aws_credentials.example.env aws_credentials.env
+nano aws_credentials.env  # Add your credentials
+```
+
+### 🔄 GitOps and ArgoCD Commands
+
+```bash
+# Sync ArgoCD applications
+chmod +x sync_argocd_apps.sh && ./sync_argocd_apps.sh
+
+# Manual ArgoCD sync
+argocd app sync devops-pipeline-dev --force
+argocd app sync devops-pipeline-staging --force
+argocd app sync devops-pipeline-prod --force
+
+# Get ArgoCD password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
+
+# Port forward ArgoCD
+kubectl port-forward -n argocd service/argocd-server 8080:443
+```
+
+### 🔵 Blue-Green Deployment Commands
+
+```bash
+# Blue-green deployment demo
+chmod +x switch_blue_green.sh && ./switch_blue_green.sh demo
+
+# Manual blue-green switch
+kubectl patch service flask-app-service -n dev -p '{"spec":{"selector":{"version":"green"}}}'
+```
+
+### 💾 Backup and Restore Commands
+
+```bash
+# Backup and restore demo
+chmod +x backup_restore_demo.sh && ./backup_restore_demo.sh demo
+
+# Manual backup
+velero backup create dev-backup --include-namespaces dev
+
+# Manual restore
+velero restore create dev-restore --from-backup dev-backup
+```
+
+### 🔍 Kubernetes Diagnostic Commands
+
+```bash
+# Check cluster status
+kubectl cluster-info
+kubectl get nodes
+
+# Check all resources
+kubectl get all -A
+
+# Check pods
+kubectl get pods -A
+kubectl get pods -n dev
+kubectl get pods -n argocd
+kubectl get pods -n gitea
+
+# Check services
+kubectl get svc -A
+kubectl get svc -n dev
+
+# Check deployments
+kubectl get deployments -A
+kubectl get deployments -n dev
+
+# Check logs
+kubectl logs -n dev deployment/flask-app
+kubectl logs -n dev deployment/user-service
+kubectl logs -n dev deployment/product-service
+
+# Describe resources
+kubectl describe pod <pod-name> -n dev
+kubectl describe deployment flask-app -n dev
+kubectl describe service flask-app-service -n dev
+```
+
+### 🐳 Docker Commands
+
+```bash
+# Build images
+docker build -t flask-app:latest ./apps/flask-app
+docker build -t user-service:latest ./apps/microservice-1
+docker build -t product-service:latest ./apps/microservice-2
+
+# Load images to kind
+kind load docker-image flask-app:latest --name devops-pipeline
+kind load docker-image user-service:latest --name devops-pipeline
+kind load docker-image product-service:latest --name devops-pipeline
+
+# Check Docker images
+docker images
+
+# Check Docker containers
+docker ps
+docker ps -a
+```
+
+### 🔐 Security Scanning Commands
+
+```bash
+# Scan images with Trivy
+trivy image --severity HIGH,CRITICAL flask-app:latest
+trivy image --severity HIGH,CRITICAL user-service:latest
+trivy image --severity HIGH,CRITICAL product-service:latest
+
+# Scan filesystem
+trivy fs --severity HIGH,CRITICAL .
+
+# Check Trivy reports
+kubectl get vulnerabilityreports -A
+```
+
+### 🌐 URL Testing Commands
+
+```bash
+# Test Flask app
+curl http://YOUR_IP:30080
+curl http://YOUR_IP:30080/api/health
+
+# Test User service
+curl http://YOUR_IP:30081/api/users
+
+# Test Product service
+curl http://YOUR_IP:30082/api/products
+
+# Test Gitea
+curl -L http://YOUR_IP:30084
+
+# Test ArgoCD
+curl -k https://YOUR_IP:30083
+```
+
+### 🔧 Port Forwarding Commands
+
+```bash
+# Flask app
+kubectl port-forward -n dev svc/flask-app-service 8080:80
+
+# User service
+kubectl port-forward -n dev svc/user-service 8081:5001
+
+# Product service
+kubectl port-forward -n dev svc/product-service 8082:5002
+
+# ArgoCD
+kubectl port-forward -n argocd service/argocd-server 8080:443
+
+# Gitea
+kubectl port-forward -n gitea svc/gitea-http 3000:3000
+```
+
+### 🗑️ Cleanup Commands
+
+```bash
+# Delete cluster
+kind delete cluster --name devops-pipeline
+
+# Delete namespace
+kubectl delete namespace dev
+
+# Delete all resources in namespace
+kubectl delete all --all -n dev
+
+# Clean Docker
+docker system prune -a
+docker volume prune
+
+# Remove specific pod
+kubectl delete pod <pod-name> -n dev --grace-period=0 --force
+```
+
+### 📊 Monitoring Commands
+
+```bash
+# Watch pods
+kubectl get pods -n dev -w
+
+# Watch services
+kubectl get svc -n dev -w
+
+# Get resource usage
+kubectl top nodes
+kubectl top pods -n dev
+
+# Get events
+kubectl get events -n dev --sort-by='.lastTimestamp'
+```
+
+### 🔄 Restart Commands
+
+```bash
+# Restart deployment
+kubectl rollout restart deployment/flask-app -n dev
+kubectl rollout restart deployment/user-service -n dev
+kubectl rollout restart deployment/product-service -n dev
+
+# Restart all deployments in namespace
+kubectl rollout restart deployment -n dev
+
+# Scale deployment
+kubectl scale deployment flask-app -n dev --replicas=3
+```
+
+### 📝 Git Commands
+
+```bash
+# Clone repository
+git clone https://github.com/auspicious27/Project6-testpurpose.git
+cd Project6-testpurpose
+
+# Pull latest code
+git pull origin main
+
+# Check status
+git status
+
+# View changes
+git diff
+```
+
+### 🔐 AWS Commands
+
+```bash
+# Configure AWS CLI
+aws configure
+
+# List EC2 instances
+aws ec2 describe-instances
+
+# Get instance IP
+aws ec2 describe-instances --query 'Reservations[*].Instances[*].PublicIpAddress' --output text
+
+# SSH to EC2
+ssh -i ~/.ssh/devops-pipeline-key.pem ubuntu@YOUR_IP
+```
+
 ## 🛠️ Manual Deployment and Testing
 
 If you prefer to deploy and test without running the helper scripts, follow these steps.
