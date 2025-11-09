@@ -572,36 +572,73 @@ print_status "Waiting for Docker registry to be ready..."
 sleep 10
 kubectl wait --for=condition=available --timeout=300s deployment/docker-registry -n registry 2>/dev/null || print_warning "Registry may still be starting"
 
-# Configure containerd to allow insecure registry
-print_status "Configuring containerd for insecure registry..."
-docker exec devops-pipeline-control-plane bash -c "mkdir -p /etc/containerd/certs.d/docker-registry.registry:5000" 2>/dev/null || true
-docker exec devops-pipeline-control-plane bash -c 'cat > /etc/containerd/certs.d/docker-registry.registry:5000/hosts.toml << "EOFHOSTS"
-server = "http://docker-registry.registry:5000"
+# Configure containerd to allow insecure registry (HTTP instead of HTTPS)
+print_status "Configuring containerd for insecure HTTP registry..."
 
-[host."http://docker-registry.registry:5000"]
-  capabilities = ["pull", "resolve"]
-  skip_verify = true
-EOFHOSTS
-' 2>/dev/null || print_warning "Could not configure containerd (will use IP-based registry)"
-
-# Also configure using registry IP as fallback
+# Get registry IP
 REGISTRY_IP=$(kubectl get svc docker-registry -n registry -o jsonpath='{.spec.clusterIP}')
+if [ -z "$REGISTRY_IP" ]; then
+    print_warning "Could not get registry IP, will retry after services are ready"
+    sleep 10
+    REGISTRY_IP=$(kubectl get svc docker-registry -n registry -o jsonpath='{.spec.clusterIP}')
+fi
+
 if [ -n "$REGISTRY_IP" ]; then
+    # Configure containerd config.toml for insecure registry
+    print_status "Configuring containerd config.toml..."
+    docker exec devops-pipeline-control-plane bash -c "cat > /etc/containerd/config.toml << 'EOFCONFIG'
+version = 2
+
+[plugins]
+  [plugins.\"io.containerd.grpc.v1.cri\"]
+    [plugins.\"io.containerd.grpc.v1.cri\".registry]
+      [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors]
+        [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"${REGISTRY_IP}:5000\"]
+          endpoint = [\"http://${REGISTRY_IP}:5000\"]
+      [plugins.\"io.containerd.grpc.v1.cri\".registry.configs]
+        [plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"${REGISTRY_IP}:5000\".tls]
+          insecure_skip_verify = true
+EOFCONFIG
+" 2>/dev/null || print_warning "Could not update containerd config.toml"
+
+    # Also configure using hosts.toml (newer containerd versions)
     docker exec devops-pipeline-control-plane bash -c "mkdir -p /etc/containerd/certs.d/${REGISTRY_IP}:5000" 2>/dev/null || true
-    docker exec devops-pipeline-control-plane bash -c "cat > /etc/containerd/certs.d/${REGISTRY_IP}:5000/hosts.toml << EOFHOSTS
+    docker exec devops-pipeline-control-plane bash -c "cat > /etc/containerd/certs.d/${REGISTRY_IP}:5000/hosts.toml << 'EOFHOSTS'
 server = \"http://${REGISTRY_IP}:5000\"
 
 [host.\"http://${REGISTRY_IP}:5000\"]
-  capabilities = [\"pull\", \"resolve\"]
+  capabilities = [\"pull\", \"resolve\", \"push\"]
   skip_verify = true
 EOFHOSTS
 " 2>/dev/null || true
+
+    # Configure for service name as well
+    docker exec devops-pipeline-control-plane bash -c "mkdir -p /etc/containerd/certs.d/docker-registry.registry:5000" 2>/dev/null || true
+    docker exec devops-pipeline-control-plane bash -c "cat > /etc/containerd/certs.d/docker-registry.registry:5000/hosts.toml << 'EOFHOSTS2'
+server = \"http://docker-registry.registry:5000\"
+
+[host.\"http://docker-registry.registry:5000\"]
+  capabilities = [\"pull\", \"resolve\", \"push\"]
+  skip_verify = true
+EOFHOSTS2
+" 2>/dev/null || true
+    
     print_success "Registry configured with IP: ${REGISTRY_IP}"
+else
+    print_error "Could not configure registry - IP not found"
 fi
 
-# Restart containerd
+# Restart containerd to apply changes
+print_status "Restarting containerd..."
 docker exec devops-pipeline-control-plane systemctl restart containerd 2>/dev/null || print_warning "Could not restart containerd"
 sleep 5
+
+# Verify containerd is running
+if docker exec devops-pipeline-control-plane systemctl is-active containerd 2>/dev/null | grep -q active; then
+    print_success "Containerd restarted successfully"
+else
+    print_warning "Containerd may not have restarted properly"
+fi
 
 print_success "Local Docker Registry installed on port 30500"
 rm -f /tmp/registry-deployment.yaml
@@ -768,6 +805,30 @@ git remote add gitea "${GITEA_URL}/${GITEA_USER}/${REPO_NAME}.git"
 # Push to Gitea
 print_status "Pushing code to Gitea..."
 git push -u gitea main 2>/dev/null || git push -u gitea master 2>/dev/null || print_warning "Failed to push to Gitea (will retry in deploy script)"
+
+# Create Gitea NodePort service for external access
+print_status "Creating Gitea NodePort service..."
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea-nodeport
+  namespace: gitea
+  labels:
+    app: gitea
+    app.kubernetes.io/name: gitea
+spec:
+  type: NodePort
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+    nodePort: 30084
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: gitea
+EOF
+print_success "Gitea NodePort service created on port 30084"
 
 # Configure ArgoCD to use Gitea repository
 print_status "Configuring ArgoCD to watch Gitea repository..."

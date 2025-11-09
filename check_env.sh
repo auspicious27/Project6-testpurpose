@@ -408,7 +408,31 @@ test_service_access() {
     fi
 }
 
-# Function to show access URLs
+# Function to check URL accessibility
+check_url_status() {
+    local name=$1
+    local url=$2
+    
+    printf "%-20s %s ... " "$name" "$url"
+    
+    response=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null)
+    
+    if [ "$response" = "200" ] || [ "$response" = "302" ] || [ "$response" = "307" ]; then
+        print_success "OK (HTTP $response)"
+        return 0
+    elif [ "$response" = "403" ]; then
+        print_success "OK - Needs Auth (HTTP $response)"
+        return 0
+    elif [ -z "$response" ] || [ "$response" = "000" ]; then
+        print_error "UNREACHABLE"
+        return 1
+    else
+        print_warning "HTTP $response"
+        return 1
+    fi
+}
+
+# Function to show access URLs and test them
 show_access_urls() {
     # Get public IP
     PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
@@ -419,44 +443,54 @@ show_access_urls() {
         PUBLIC_IP=$(hostname -I | awk '{print $1}')
     fi
     if [ -z "$PUBLIC_IP" ]; then
-        PUBLIC_IP="<YOUR_PUBLIC_IP>"
+        PUBLIC_IP="localhost"
+        print_warning "Could not detect public IP, using localhost"
     fi
     
     echo ""
     echo "=========================================="
-    echo "🌐 ACCESS URLs (Use from your browser):"
+    echo "🌐 APPLICATION URLs & STATUS"
     echo "=========================================="
     echo ""
-    echo "Flask App:       http://${PUBLIC_IP}:30080"
-    echo "User Service:    http://${PUBLIC_IP}:30081/api/users"
-    echo "Product Service: http://${PUBLIC_IP}:30082/api/products"
-    echo "ArgoCD:          http://${PUBLIC_IP}:30083"
-    echo "Gitea:           http://${PUBLIC_IP}:30084"
-    echo "MinIO:           http://${PUBLIC_IP}:30085"
+    
+    # Check all services
+    check_url_status "Flask App" "http://${PUBLIC_IP}:30080"
+    check_url_status "User Service" "http://${PUBLIC_IP}:30081/api/users"
+    check_url_status "Product Service" "http://${PUBLIC_IP}:30082/api/products"
+    check_url_status "ArgoCD" "http://${PUBLIC_IP}:30083"
+    check_url_status "Gitea" "http://${PUBLIC_IP}:30084"
+    check_url_status "MinIO" "http://${PUBLIC_IP}:30085"
+    check_url_status "Docker Registry" "http://${PUBLIC_IP}:30500/v2/"
+    
     echo ""
     echo "=========================================="
-    echo "🔐 CREDENTIALS:"
+    echo "🔐 CREDENTIALS"
     echo "=========================================="
     echo ""
     echo "Gitea:  admin / admin123"
     echo "MinIO:  minioadmin / minioadmin123"
     echo ""
-    echo "ArgoCD: admin / <run command below>"
-    echo "  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d && echo"
+    echo "ArgoCD Password:"
+    ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+    if [ -n "$ARGOCD_PASSWORD" ]; then
+        echo "  Username: admin"
+        echo "  Password: $ARGOCD_PASSWORD"
+    else
+        echo "  Run: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d"
+    fi
     echo ""
     echo "=========================================="
-    echo "⚠️  AWS Security Group Ports:"
+    echo "⚠️  AWS Security Group Configuration"
     echo "=========================================="
     echo ""
-    echo "Make sure ports 30080-30085 are open:"
+    echo "If services show UNREACHABLE, open these ports:"
     echo ""
     echo "1. Go to: AWS Console → EC2 → Security Groups"
     echo "2. Select your instance's security group"
-    echo "3. Edit Inbound Rules → Add Rule:"
-    echo "   - Type: Custom TCP"
-    echo "   - Port Range: 30080-30085"
+    echo "3. Edit Inbound Rules → Add these Custom TCP rules:"
+    echo "   - Port Range: 30080-30085, 30500"
     echo "   - Source: 0.0.0.0/0"
-    echo "4. Save rules"
+    echo "4. Save rules and wait 30 seconds"
     echo ""
 }
 
