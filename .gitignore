@@ -1,0 +1,45 @@
+# AWS Credentials - NEVER COMMIT THESE
+aws_credentials.env
+.aws_credentials
+*.pem
+*.key
+
+# Log files
+*.log
+*.txt.log
+
+# Temporary files
+/tmp/
+*.tmp
+*.swp
+*.bak
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Kubernetes config (may contain sensitive data)
+kubeconfig
+.kube/config.local
+
+# Environment files
+.env
+.env.local
+*.env
+
+# Setup logs
+setup_*.log
+fix_*.log
+*_setup.log
+*_fix.log
+
+# EC2 instance details
+ec2_config.env
+instance_details.txt
+

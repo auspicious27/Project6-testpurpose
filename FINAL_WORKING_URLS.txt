@@ -1,0 +1,50 @@
+========================================
+🌐 ALL WORKING URLs - FINAL LIST
+========================================
+
+EC2 Instance: 54.197.219.80
+
+✅ WORKING URLs:
+
+1. Flask Application:
+   http://54.197.219.80:30080
+   ✅ CONFIRMED WORKING
+
+2. User Service API:
+   http://54.197.219.80:30081/api/users
+   ✅ CONFIRMED WORKING
+
+3. Product Service API:
+   http://54.197.219.80:30082/api/products
+   ✅ CONFIRMED WORKING
+
+⚠️ INSTALLING (Wait 2-3 minutes):
+
+4. ArgoCD:
+   http://54.197.219.80:30083
+   Username: admin
+   Password: (run command below to get)
+
+5. Gitea:
+   http://54.197.219.80:30084
+   Username: admin
+   Password: admin123
+
+========================================
+QUICK TEST COMMANDS:
+========================================
+
+curl http://54.197.219.80:30080
+curl http://54.197.219.80:30081/api/users
+curl http://54.197.219.80:30082/api/products
+curl -L http://54.197.219.80:30084
+curl -k https://54.197.219.80:30083
+
+========================================
+GET ARGOCD PASSWORD:
+========================================
+
+ssh -i ~/.ssh/devops-pipeline-key.pem ubuntu@54.197.219.80
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
+
+========================================
