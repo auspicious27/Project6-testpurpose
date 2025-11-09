@@ -31,20 +31,407 @@ chmod +x reset_and_setup.sh && ./reset_and_setup.sh
 
 This will delete the existing cluster and recreate with all ports properly mapped.
 
+## 📋 Complete Step-by-Step Guide: Kaise Check Karein Aur Kaise Run Karein
+
+### Prerequisites Check (Pehle Ye Check Karein)
+
+**Important:** Kisi bhi script ko run karne se pehle, yeh ensure karein:
+
+1. **Docker Check:**
+   ```bash
+   # macOS par Docker Desktop open karein
+   # Ya terminal me check karein:
+   docker ps
+   ```
+   Agar error aaye to Docker Desktop start karein.
+
+2. **Required Tools Check:**
+   ```bash
+   # Ye sab tools installed hone chahiye:
+   docker --version
+   kubectl version --client
+   kind --version
+   helm version
+   ```
+
+### Step 1: Prerequisites Install Karein
+
+```bash
+# Script ko executable banao
+chmod +x setup_prereqs.sh
+
+# Run karo
+./setup_prereqs.sh
+```
+
+**Kya Install Hoga:**
+- Docker & Docker Compose
+- kubectl (Kubernetes CLI)
+- kind (Kubernetes in Docker)
+- Helm (Package Manager)
+- ArgoCD CLI
+- Trivy (Security Scanner)
+- Velero (Backup Tool)
+- Kustomize
+- MkDocs (Documentation)
+
+**Success Message:**
+```
+[SUCCESS] All prerequisites installed successfully!
+```
+
+### Step 2: Cluster Bootstrap Karein
+
+```bash
+# Script ko executable banao
+chmod +x bootstrap_cluster.sh
+
+# Run karo (ye 5-10 minutes le sakta hai)
+./bootstrap_cluster.sh
+```
+
+**Kya Create Hoga:**
+- ✅ Kubernetes cluster (kind)
+- ✅ NGINX Ingress Controller
+- ✅ Gitea (Git Server) - Port 30084
+- ✅ ArgoCD (GitOps) - Port 30083
+- ✅ MinIO (S3 Storage)
+- ✅ Trivy Operator (Security)
+- ✅ Velero (Backup)
+
+**Success Message:**
+```
+[SUCCESS] Cluster bootstrap completed successfully!
+```
+
+**Important:** Agar error aaye:
+- Docker running hai ya nahi check karein
+- Sufficient memory/disk space hai ya nahi
+- Internet connection active hai
+
+### Step 3: Applications Deploy Karein
+
+```bash
+# Script ko executable banao
+chmod +x deploy_pipeline.sh
+
+# Run karo
+./deploy_pipeline.sh
+```
+
+**Kya Deploy Hoga:**
+- ✅ Flask Web Application - Port 30080
+- ✅ User Service - Port 30081
+- ✅ Product Service - Port 30082
+- ✅ All Kubernetes manifests
+- ✅ ArgoCD applications
+
+### Step 4: Sab Kuch Check Karein
+
+#### 4.1: Complete Environment Check
+
+```bash
+# Script ko executable banao
+chmod +x check_env.sh
+
+# Run karo - ye sab kuch check karega
+./check_env.sh
+```
+
+**Yeh Script Check Karega:**
+- ✅ Cluster status
+- ✅ All namespaces
+- ✅ ArgoCD applications
+- ✅ Gitea status
+- ✅ MinIO status
+- ✅ Trivy Operator
+- ✅ Velero
+- ✅ Application deployments
+- ✅ Service endpoints
+- ✅ Access URLs
+
+**Output Me Milega:**
+- Service URLs
+- Credentials
+- Health status
+- Troubleshooting tips
+
+#### 4.2: Gitea Specific Check (Detailed)
+
+```bash
+# Gitea ke liye detailed diagnostic script
+chmod +x check_gitea.sh
+
+# Run karo
+./check_gitea.sh
+```
+
+**Yeh Script Check Karega:**
+- ✅ Docker status
+- ✅ Kubernetes cluster status
+- ✅ Gitea namespace
+- ✅ Gitea pods (status, logs)
+- ✅ Gitea services (ClusterIP/NodePort)
+- ✅ Gitea ingress
+- ✅ Port forwarding options
+- ✅ Connectivity tests
+- ✅ Troubleshooting recommendations
+
+**Output Example:**
+```
+========================================
+Step 1: Checking Docker Status
+========================================
+[SUCCESS] Docker is running
+
+========================================
+Step 2: Checking Kubernetes Cluster
+========================================
+[SUCCESS] Cluster 'devops-pipeline' exists
+[SUCCESS] Cluster is accessible
+
+========================================
+Step 4: Checking Gitea Pods
+========================================
+[SUCCESS] Pod gitea-xxx is running and ready
+
+========================================
+Step 5: Checking Gitea Services
+========================================
+[SUCCESS] Service gitea-http is exposed via NodePort
+    NodePort: 30084
+
+========================================
+Step 9: NodePort Access Information
+========================================
+Access Gitea at:
+  http://localhost:30084
+  http://YOUR_IP:30084
+  Credentials: admin / admin123
+```
+
+#### 4.3: Manual Checks (Agar Scripts Kaam Na Karein)
+
+**Cluster Status:**
+```bash
+# Cluster check
+kubectl cluster-info
+kubectl get nodes
+
+# Sab pods check karo
+kubectl get pods -A
+```
+
+**Gitea Check:**
+```bash
+# Gitea pods
+kubectl get pods -n gitea
+
+# Gitea services
+kubectl get svc -n gitea
+
+# Gitea logs
+kubectl logs -n gitea -l app.kubernetes.io/name=gitea --tail=50
+
+# Gitea pod details
+kubectl describe pods -n gitea
+```
+
+**ArgoCD Check:**
+```bash
+# ArgoCD pods
+kubectl get pods -n argocd
+
+# ArgoCD applications
+kubectl get applications -n argocd
+
+# ArgoCD password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
+```
+
+**Applications Check:**
+```bash
+# Dev namespace me sab kuch
+kubectl get all -n dev
+
+# Services check
+kubectl get svc -n dev
+
+# Pods status
+kubectl get pods -n dev
+```
+
+### Step 5: Access URLs (Browser Me Open Karein)
+
+**Important:** Pehle AWS Security Group me ports open karein:
+- Port 30080 (Flask App)
+- Port 30081 (User Service)
+- Port 30082 (Product Service)
+- Port 30083 (ArgoCD)
+- Port 30084 (Gitea)
+
+**Access URLs:**
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Flask App** | http://YOUR_IP:30080 | - |
+| **User Service** | http://YOUR_IP:30081/api/users | - |
+| **Product Service** | http://YOUR_IP:30082/api/products | - |
+| **ArgoCD** | http://YOUR_IP:30083 | admin/[password below] |
+| **Gitea** | http://YOUR_IP:30084 | admin/admin123 |
+
+**ArgoCD Password Get Karne Ke Liye:**
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
+```
+
+### Common Issues Aur Solutions
+
+#### Issue 1: Docker Not Running
+
+**Error:**
+```
+Cannot connect to the Docker daemon
+```
+
+**Solution:**
+```bash
+# macOS: Docker Desktop open karo
+# Linux: 
+sudo systemctl start docker
+sudo systemctl enable docker
+```
+
+#### Issue 2: Cluster Not Accessible
+
+**Error:**
+```
+The connection to the server localhost:8080 was refused
+```
+
+**Solution:**
+```bash
+# Kubeconfig set karo
+kind get kubeconfig --name devops-pipeline > ~/.kube/config
+kubectl config use-context kind-devops-pipeline
+
+# Verify
+kubectl get nodes
+```
+
+#### Issue 3: Gitea Not Opening
+
+**Check Karo:**
+```bash
+# Detailed Gitea check
+./check_gitea.sh
+
+# Ya manually:
+kubectl get pods -n gitea
+kubectl get svc -n gitea
+kubectl logs -n gitea -l app.kubernetes.io/name=gitea
+```
+
+**Solutions:**
+```bash
+# Agar pod running nahi hai:
+kubectl describe pod -n gitea <pod-name>
+
+# Agar service NodePort nahi hai:
+kubectl patch svc gitea-http -n gitea -p '{"spec":{"type":"NodePort","ports":[{"port":3000,"targetPort":3000,"nodePort":30084}]}}'
+
+# Pod restart karo:
+kubectl rollout restart deployment/gitea -n gitea
+```
+
+#### Issue 4: Port Forwarding (Local Access)
+
+**Agar NodePort kaam nahi kar raha, port-forward use karo:**
+```bash
+# Gitea
+kubectl port-forward -n gitea svc/gitea-http 3000:3000
+# Phir browser me: http://localhost:3000
+
+# ArgoCD
+kubectl port-forward -n argocd svc/argocd-server 8080:443
+# Phir browser me: https://localhost:8080
+```
+
+### Quick Reference Commands
+
+**Sab Kuch Check Karne Ke Liye:**
+```bash
+# Complete check
+./check_env.sh
+
+# Gitea specific
+./check_gitea.sh
+
+# URLs check
+./check_urls.sh
+```
+
+**Logs Dekhne Ke Liye:**
+```bash
+# Gitea logs
+kubectl logs -n gitea -l app.kubernetes.io/name=gitea --tail=100 -f
+
+# ArgoCD logs
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-server --tail=100 -f
+
+# Application logs
+kubectl logs -n dev deployment/flask-app --tail=100 -f
+kubectl logs -n dev deployment/user-service --tail=100 -f
+kubectl logs -n dev deployment/product-service --tail=100 -f
+```
+
+**Reset Karne Ke Liye:**
+```bash
+# Complete reset
+./reset_and_setup.sh
+
+# Ya manually:
+kind delete cluster --name devops-pipeline
+./bootstrap_cluster.sh
+./deploy_pipeline.sh
+```
+
+### Scripts Summary
+
+| Script | Purpose | When to Run |
+|--------|---------|-------------|
+| `setup_prereqs.sh` | Install all prerequisites | First time setup |
+| `bootstrap_cluster.sh` | Create cluster + install infrastructure | After prerequisites |
+| `deploy_pipeline.sh` | Deploy applications | After bootstrap |
+| `check_env.sh` | Complete health check | Anytime to verify |
+| `check_gitea.sh` | Gitea detailed diagnostics | When Gitea not working |
+| `check_urls.sh` | Test all service URLs | To verify access |
+| `reset_and_setup.sh` | Complete reset and setup | When starting fresh |
+
 ## 📋 Table of Contents
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Detailed Setup](#detailed-setup)
-- [Usage](#usage)
-- [Access URLs](#access-urls)
- - [Manual Deployment and Testing](#manual-deployment-and-testing)
-- [Features](#features)
-- [Documentation](#documentation)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
+- [Quick Start](#-quick-start)
+- [Complete Step-by-Step Guide](#-complete-step-by-step-guide-kaise-check-karein-aur-kaise-run-karein)
+  - [Prerequisites Check](#prerequisites-check-pehle-ye-check-karein)
+  - [Step 1: Prerequisites Install](#step-1-prerequisites-install-karein)
+  - [Step 2: Cluster Bootstrap](#step-2-cluster-bootstrap-karein)
+  - [Step 3: Applications Deploy](#step-3-applications-deploy-karein)
+  - [Step 4: Sab Kuch Check](#step-4-sab-kuch-check-karein)
+  - [Step 5: Access URLs](#step-5-access-urls-browser-me-open-karein)
+  - [Common Issues Aur Solutions](#common-issues-aur-solutions)
+  - [Quick Reference Commands](#quick-reference-commands)
+  - [Scripts Summary](#scripts-summary)
+- [Overview](#-overview)
+- [Architecture](#-architecture)
+- [Prerequisites](#-prerequisites)
+- [Detailed Setup](#-detailed-setup)
+- [Usage](#-usage)
+- [Access URLs](#-access-urls)
+- [Manual Deployment and Testing](#-manual-deployment-and-testing)
+- [Features](#-features)
+- [Documentation](#-documentation)
+- [Troubleshooting](#-troubleshooting)
+- [Contributing](#-contributing)
 
 ## 🏗️ Overview
 
