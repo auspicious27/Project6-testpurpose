@@ -1,5 +1,6 @@
 # AWS Credentials - NEVER COMMIT THESE
 aws_credentials.env
+!aws_credentials.example.env  # Allow example file
 .aws_credentials
 *.pem
 *.key
@@ -32,6 +33,7 @@ kubeconfig
 .env
 .env.local
 *.env
+!aws_credentials.example.env  # Allow example file
 
 # Setup logs
 setup_*.log
